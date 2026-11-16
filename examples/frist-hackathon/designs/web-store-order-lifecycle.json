@@ -1,0 +1,45 @@
+{
+  "slug": "web-store-order-lifecycle",
+  "summary": "Orders are handed to an outside warehouse that may accept only part of an order. Every amount shown anywhere must equal a twin order placed for only the accepted units, through lost answers and two servers.",
+  "modes": [
+    "derived-surface-omitted",
+    "idempotency-under-failure",
+    "cross-process-state"
+  ],
+  "ticket_rules": [
+    "Every placed order reaches the warehouse exactly once, whatever fails or is repeated, through either server.",
+    "The order shows what was accepted; units not accepted go back on sale exactly once.",
+    "Every amount shown for the order, anywhere, is what the existing pricing rules give for the accepted units.",
+    "Placing an order never waits for or fails because of the warehouse."
+  ],
+  "criteria": [
+    {
+      "id": "AC1",
+      "mode": "idempotency-under-failure",
+      "text": "one shipment through lost answers and repeats"
+    },
+    {
+      "id": "AC3",
+      "mode": "derived-surface-omitted",
+      "text": "line totals, delivery charge, history and export equal the accepted-units twin"
+    },
+    {
+      "id": "AC9",
+      "mode": "cross-process-state",
+      "text": "the same checkout sent to both servers at once makes one order"
+    }
+  ],
+  "textbook_build": {
+    "idempotency-under-failure": {
+      "build": "outbox row in the order transaction, worker, lookup before create",
+      "hidden_case_it_fails": "zero-accepted line and held units in the CSV export"
+    }
+  },
+  "central_change_risk": "Recomputing totals as a sum of accepted lines misses the delivery threshold and per-line rounding.",
+  "measured": {
+    "cases": 118,
+    "attempts": 6,
+    "solved": 3,
+    "slips": "zero-unit line, held units in export (x2), concurrent checkout on two servers"
+  }
+}

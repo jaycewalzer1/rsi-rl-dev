@@ -1,0 +1,49 @@
+{
+  "slug": "issue-tracker-security-levels",
+  "summary": "Security levels on work items are stored but never enforced. A restricted item must behave as if it never existed for everyone outside its level, wherever it is named, listed, counted or pointed at.",
+  "modes": [
+    "authz-by-id",
+    "derived-surface-omitted",
+    "sibling-path-missed"
+  ],
+  "ticket_rules": [
+    "A person outside an item's level gets the same answer for it as for an id that was never used, and the request changes nothing.",
+    "Lists, counts, links, history and exports show only what the viewer could open directly.",
+    "Members of the level and administrators see everything as today."
+  ],
+  "criteria": [
+    {
+      "id": "AC1",
+      "mode": "authz-by-id",
+      "text": "by-id reads and writes answer like a never-used id"
+    },
+    {
+      "id": "AC2",
+      "mode": "derived-surface-omitted",
+      "text": "counts and summaries (sprint, epic, release, board plan) exclude restricted items"
+    },
+    {
+      "id": "AC3",
+      "mode": "sibling-path-missed",
+      "text": "pickers, search and suggestions exclude them"
+    },
+    {
+      "id": "AC4",
+      "mode": "sibling-path-missed",
+      "text": "links to and from a restricted item vanish in both directions"
+    }
+  ],
+  "textbook_build": {
+    "authz-by-id": {
+      "build": "check the level in the item loader",
+      "hidden_case_it_fails": "a release count computed by a separate aggregate query"
+    }
+  },
+  "central_change_risk": "One per-request user context consulted by every lookup gets close; aggregates that never load an item escape it.",
+  "measured": {
+    "cases": 22,
+    "attempts": 3,
+    "solved": 1,
+    "slips": "release count leaked in both failed builds"
+  }
+}

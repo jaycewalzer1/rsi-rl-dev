@@ -1,0 +1,15 @@
+{
+  "slug": "shoe-store-returns-refund-once",
+  "summary": "Returns refund through an outside service and restock exactly once, through lost answers, a stopped server, retries and refused refunds.",
+  "modes": [
+    "idempotency-under-failure",
+    "cross-process-state"
+  ],
+  "criteria": [],
+  "measured": {
+    "attempts": 3,
+    "solved": 3,
+    "slips": "none"
+  },
+  "lesson": "dead design: every trap was stated in the ticket and planned around. Stated traps are to-do items, not difficulty."
+}

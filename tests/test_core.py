@@ -87,3 +87,12 @@ def test_mode_slips_and_hardest_family(tmp_path):
     diff = {"models": {"m": {"failed_tests": {"t1": ["a1", "a2"], "t2": ["a1", "b1"], "t3": []}}}}
     assert calibrate.mode_slips(t, diff) == {"authz-by-id": 2, "derived-surface-omitted": 1}
     assert calibrate.hardest_family(t, diff) == "AC1"
+
+
+def test_prior_history_and_examples_load():
+    rows = [json.loads(l) for l in combine.PRIOR_HISTORY.read_text().splitlines()]
+    seed_ids = {m["id"] for m in json.loads((ROOT / "seeds" / "failure_modes.json").read_text())}
+    assert all(set(r["modes"]) <= seed_ids for r in rows)
+    assert all(set(r["mode_slips"]) <= set(r["modes"]) for r in rows)
+    assert "Measured 1/3" in combine.examples()
+    assert "{" not in combine.DESIGN.format(modes="x", target=0.25, examples="y").split("JSON:")[0]

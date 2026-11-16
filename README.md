@@ -8,7 +8,9 @@ give a learning signal.
 
 Built from what we learned at the Frist RL-task hackathon (Nov 15 2026): every first task design came
 out too easy, and the difficulty rules in [`docs/DIFFICULTY_RULES.md`](docs/DIFFICULTY_RULES.md)
-are what it took to get frontier agents to slip fairly.
+are what it took to get frontier agents to slip fairly. The six hackathon tasks and their measured
+Opus 5.5 pass counts ([`examples/frist-hackathon/`](examples/frist-hackathon/)) are the loop's
+starting history and the author model's worked examples.
 
 ## The loop
 
@@ -107,7 +109,8 @@ records solver model and agent.
 
 ## Status
 
-- Verified live: Harbor oracle / nop / mutation stages on the smoke task (Docker, local).
+- Verified live: Harbor oracle / nop / mutation stages on the smoke task (Docker, local), and
+  scan + papers (web-snippet fallback, Sonnet 5.5 judge): 13 concrete complaints, 5 paper-backed modes.
 - Unit tests: `uv run pytest`.
 - The difficulty, shortcut and calibrate stages need solver credentials for Harbor and spend
   real model time: a full calibration is roughly 8 to 32 frontier-agent attempts per task.

@@ -1,0 +1,40 @@
+{
+  "slug": "shoe-store-warehouse-holds",
+  "summary": "Stock by size moves to an outside warehouse. An order exists only if the warehouse holds every pair on it, and every hold belongs to an order that exists.",
+  "modes": [
+    "idempotency-under-failure",
+    "seam-assumption",
+    "cross-process-state"
+  ],
+  "ticket_rules": [
+    "Repeating a request never holds pairs twice.",
+    "If holds cannot be established the order is refused and pairs already held are given back by the shopper's next request to either server.",
+    "The result after a failure and resend is identical to the run without the failure."
+  ],
+  "criteria": [
+    {
+      "id": "AC1",
+      "mode": "idempotency-under-failure",
+      "text": "one hold per line through repeats on either server"
+    },
+    {
+      "id": "AC6",
+      "mode": "seam-assumption",
+      "text": "an item added to the bag after a 503 survives when the resent order finishes"
+    }
+  ],
+  "textbook_build": {
+    "seam-assumption": {
+      "build": "empty the bag when a resent order finishes",
+      "hidden_case_it_fails": "the bag item added between the failure and the resend"
+    }
+  },
+  "central_change_risk": "Difficulty rested on one cause; the textbook build either knew it or not.",
+  "measured": {
+    "cases": 62,
+    "attempts": 6,
+    "solved": 3,
+    "slips": "the same three bag cases in all three failed builds"
+  },
+  "lesson": "one failure mode carrying all the difficulty gives a coin flip, not a band"
+}

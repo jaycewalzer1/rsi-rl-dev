@@ -8,6 +8,7 @@ always handled get picked less (Thompson-style sampling on a Beta posterior).
 
 from __future__ import annotations
 
+import json
 import random
 from pathlib import Path
 
@@ -16,6 +17,8 @@ from .config import CONFIG
 from .store import read_json, read_jsonl, write_json
 
 HISTORY = Path("runs/history.jsonl")
+EXAMPLES = Path(__file__).resolve().parent.parent / "examples" / "frist-hackathon"
+PRIOR_HISTORY = EXAMPLES / "history.jsonl"
 
 DESIGN = """You design one RL coding task for frontier coding agents. Target: a cold
 frontier agent fully solves it about {target:.0%} of the time. Every failure must be FAIR:
@@ -24,6 +27,10 @@ the agent missed something the ticket plainly states.
 Stack these independent failure modes, EACH in a different acceptance criterion and a
 different part of the code:
 {modes}
+
+Measured designs from earlier runs (cold Opus 5.5 pass counts included). Copy what landed
+in band, avoid what was too easy:
+{examples}
 
 Rules learned the hard way (follow all of them):
 - Frontier agents notice every trap a ticket states and repair every neighbour it names.
@@ -63,7 +70,7 @@ JSON: {{"central_change_found": true|false, "change": "...", "unfair_criteria": 
 def mode_weights(modes: list[dict]) -> dict[str, tuple[int, int]]:
     """Beta(1 + slips, 1 + handled) per mode, from past calibrated tasks."""
     stats = {m["id"]: [1, 1] for m in modes}
-    for row in read_jsonl(HISTORY):
+    for row in read_jsonl(PRIOR_HISTORY) + read_jsonl(HISTORY):
         for mode_id, slipped in row.get("mode_slips", {}).items():
             if mode_id in stats:
                 stats[mode_id][0] += slipped
@@ -85,6 +92,18 @@ def pick_modes(modes: list[dict], k: int, rng: random.Random) -> list[dict]:
     return picked
 
 
+def examples() -> str:
+    out = []
+    for p in sorted((EXAMPLES / "designs").glob("*.json")):
+        d = json.loads(p.read_text())
+        m = d.get("measured", {})
+        out.append(
+            f"- {d['slug']} [{', '.join(d['modes'])}]: {d['summary']} "
+            f"Measured {m.get('solved')}/{m.get('attempts')} solved; slips: {m.get('slips')}. {d.get('lesson', '')}"
+        )
+    return "\n".join(out)
+
+
 def design(modes: list[dict], k: int, rng: random.Random, tries: int = 3) -> dict:
     for attempt in range(tries):
         chosen = pick_modes(modes, k, rng)
@@ -94,7 +113,7 @@ def design(modes: list[dict], k: int, rng: random.Random, tries: int = 3) -> dic
             f"{', '.join(p['url'] for p in m.get('papers', [])) or m.get('evidence', '')})"
             for m in chosen
         )
-        d = llm.ask_json(DESIGN.format(modes=text, target=CONFIG.target_rate), CONFIG.author_model)
+        d = llm.ask_json(DESIGN.format(modes=text, target=CONFIG.target_rate, examples=examples()), CONFIG.author_model)
         review = llm.ask_json(CENTRAL.format(design=d), CONFIG.judge_model)
         d["modes"] = [m["id"] for m in chosen]
         d["design_review"] = review

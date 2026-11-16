@@ -1,0 +1,44 @@
+{
+  "slug": "hr-department-pay-reviewers",
+  "summary": "HR lets a named person see pay for chosen departments only, while pay stops leaking to everyone else through reports, range filters, filter suggestions and the dashboard.",
+  "modes": [
+    "authz-by-id",
+    "derived-surface-omitted",
+    "timezone-math"
+  ],
+  "ticket_rules": [
+    "A reviewer sees pay exactly for people in their departments as of today by the company clock.",
+    "Nobody else learns a pay value, order or threshold through any report, filter, suggestion or dashboard.",
+    "Everything this ticket does not describe behaves as it does today."
+  ],
+  "criteria": [
+    {
+      "id": "AC1",
+      "mode": "authz-by-id",
+      "text": "by-id pay reads answer like a never-used id for non-reviewers"
+    },
+    {
+      "id": "AC2",
+      "mode": "derived-surface-omitted",
+      "text": "custom reports, snapshots and filter suggestions carry no pay for others"
+    },
+    {
+      "id": "AC3",
+      "mode": "timezone-math",
+      "text": "a department move dated ahead changes nothing until its date"
+    }
+  ],
+  "textbook_build": {
+    "derived-surface-omitted": {
+      "build": "strip pay in the employee serializer",
+      "hidden_case_it_fails": "the pay cell of a custom report"
+    }
+  },
+  "central_change_risk": "A read filter on the pay table covers reads but not report cells computed elsewhere or dated moves.",
+  "measured": {
+    "cases": 155,
+    "attempts": 3,
+    "solved": 1,
+    "slips": "snapshot cells, custom report pay cell, move dated ahead"
+  }
+}
