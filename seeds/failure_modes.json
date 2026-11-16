@@ -1,0 +1,101 @@
+[
+  {
+    "id": "sibling-path-missed",
+    "mode": "Paired or parallel requirements: the agent ships one branch (sync, read, single edit) and drops its sibling (async, write, bulk edit).",
+    "textbook_build": "Add the check to the route the ticket's example uses.",
+    "hidden_case": "The same rule exercised through the sibling route (bulk edit, board drag, async variant).",
+    "papers": [{"title": "DeepSWE: Measuring Frontier Coding Agents on Original, Long-Horizon Engineering Tasks", "url": "https://arxiv.org/abs/2607.07946", "year": "2026", "source": "arxiv"}],
+    "complaints": [],
+    "evidence": "paper read during the Frist hackathon; about two thirds of failed Claude rollouts tagged 'missed requirement'"
+  },
+  {
+    "id": "single-manifestation-fix",
+    "mode": "Partial fix that covers the one manifestation a reproduction shows and leaves other surfaces of the same bug (read-only display, export).",
+    "textbook_build": "Patch the file the reproduction test points at.",
+    "hidden_case": "The same defect observed through a second surface the ticket names by business class.",
+    "papers": [{"title": "SWE-Doctor", "url": "https://www.alphaxiv.org/abs/2607.00990", "year": "2026", "source": "alphaxiv"}],
+    "complaints": [],
+    "evidence": "abstract read"
+  },
+  {
+    "id": "seam-assumption",
+    "mode": "Unverified assumption about existing behaviour at an integration seam (cancellation everywhere except already-queued callbacks).",
+    "textbook_build": "Implement the feature in the new code and trust the existing module's contract.",
+    "hidden_case": "Work already in flight in the existing module when the new behaviour starts.",
+    "papers": [{"title": "DeepSWE (appendix C and D)", "url": "https://arxiv.org/html/2607.07946", "year": "2026", "source": "arxiv"}],
+    "complaints": [],
+    "evidence": "paper read"
+  },
+  {
+    "id": "multi-file-semantics",
+    "mode": "Semantically wrong multi-file edits that compile and pass shallow tests.",
+    "textbook_build": "Edit each file locally consistent with its neighbour.",
+    "hidden_case": "An end-to-end value that crosses all edited files.",
+    "papers": [{"title": "SWE-Bench Pro", "url": "https://arxiv.org/abs/2509.16941", "year": "2025", "source": "arxiv"}],
+    "complaints": [],
+    "evidence": "paper read"
+  },
+  {
+    "id": "authz-by-id",
+    "mode": "By-id authorization parity: a request naming a forbidden id must get the same answer as a never-used id and change nothing, on every route that takes such an id, above all writes.",
+    "textbook_build": "Check 'logged in' and load the record by id; maybe a 403.",
+    "hidden_case": "A write route where a forbidden id gets 403 (enumerable) or is partially applied.",
+    "papers": [],
+    "complaints": [{"url": "https://snyk.io/blog/ai-coding-agents-broken-access-control/", "text": "AI coding agents check logged-in and look the record up by id", "provenance": "practitioner_blog"}],
+    "evidence": "measured in the Frist hackathon: 1 cold Opus 5.5 solve in 4 on a task built on this"
+  },
+  {
+    "id": "derived-surface-omitted",
+    "mode": "A rule applied to the main rows but not to derived copies: cache keys, search index, export, totals, history.",
+    "textbook_build": "Filter the main table query.",
+    "hidden_case": "The export, count or search result for the same viewer.",
+    "papers": [],
+    "complaints": [{"url": "https://sourcery.ai/security/categories/tenant_aware_caching_bugs", "text": "tenant-aware caching bugs", "provenance": "practitioner_blog"}],
+    "evidence": "measured in the Frist hackathon: derived values on unlike surfaces against an as-if twin caused slips"
+  },
+  {
+    "id": "idempotency-under-failure",
+    "mode": "An idempotency key that still double-acts: timeout with unknown outcome, two concurrent claims, crash mid-call, same key different payload.",
+    "textbook_build": "Store the key after the side effect succeeds.",
+    "hidden_case": "A retry after a timeout that the provider actually completed.",
+    "papers": [],
+    "complaints": [{"url": "https://www.infoworld.com/article/4191741/why-an-idempotency-key-isnt-an-idempotency-guarantee.html", "text": "eleven ways an idempotency key still double-acts", "provenance": "practitioner_blog"}],
+    "evidence": "article read"
+  },
+  {
+    "id": "early-stop",
+    "mode": "Weak self-verification: the agent writes an easy test for itself, guesses what the grader checks and stops.",
+    "textbook_build": "Run the visible test once and submit.",
+    "hidden_case": "Hidden cases at width beyond the visible example.",
+    "papers": [{"title": "DeepSWE", "url": "https://arxiv.org/abs/2607.07946", "year": "2026", "source": "arxiv"}],
+    "complaints": [],
+    "evidence": "paper read: one model submitted without running any test on 18% of runs"
+  },
+  {
+    "id": "cross-process-state",
+    "mode": "In-process fixes (mutex, Map, module cache) that look right with one server copy and fail with two copies behind one database.",
+    "textbook_build": "A module-level lock or cache.",
+    "hidden_case": "The same request pair sent to two different processes.",
+    "papers": [{"title": "CONCUR", "url": "https://arxiv.org/abs/2603.03683", "year": "2026", "source": "arxiv"}],
+    "complaints": [],
+    "evidence": "abstract only; the two-copy point is from hackathon practice"
+  },
+  {
+    "id": "timezone-math",
+    "mode": "Date math: offset taken from now instead of the target date, adding 24h instead of a calendar day across DST, server-local schedules.",
+    "textbook_build": "datetime arithmetic with timedelta(days=1) in server time.",
+    "hidden_case": "A schedule that crosses a DST boundary in a non-UTC zone.",
+    "papers": [],
+    "complaints": [{"url": "https://blog.arkency.com/the-timezone-bug-that-hid-in-plain-sight-for-months/", "text": "the timezone bug that hid in plain sight for months", "provenance": "practitioner_blog"}],
+    "evidence": "snippet only"
+  },
+  {
+    "id": "scope-regression",
+    "mode": "Test-passing patches that touch the wrong files or break other code; maintainers reject about half.",
+    "textbook_build": "Broad refactor that makes the new test pass.",
+    "hidden_case": "Existing behaviour on a neighbouring flow the obvious fix changes.",
+    "papers": [],
+    "complaints": [{"url": "https://metr.org/notes/2026-03-10-many-swe-bench-passing-prs-would-not-be-merged-into-main/", "text": "many SWE-bench-passing PRs would not be merged", "provenance": "practitioner_blog"}],
+    "evidence": "note read"
+  }
+]

@@ -1,0 +1,8 @@
+[
+  {"id": "AC1", "mode": "smoke", "sentence": "A transfer whose amount is not a positive integer is refused.",
+   "tests": ["test_bad_amount_refused[0]", "test_bad_amount_refused[-1]", "test_bad_amount_refused[1.5]", "test_bad_amount_refused[3]"]},
+  {"id": "AC2", "mode": "smoke", "sentence": "A transfer from or to an account that does not exist is refused.",
+   "tests": ["test_unknown_account_refused[x-b]", "test_unknown_account_refused[a-x]"]},
+  {"id": "AC3", "mode": "smoke", "sentence": "A transfer that would take the source balance below zero is refused.",
+   "tests": ["test_overdraft_refused", "test_valid_transfer_moves_money"]}
+]

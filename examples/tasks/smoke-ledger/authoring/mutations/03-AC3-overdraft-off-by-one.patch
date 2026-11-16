@@ -1,0 +1,13 @@
+diff --git a/ledger.py b/ledger.py
+index 8c7e2d1..b517184 100644
+--- a/ledger.py
++++ b/ledger.py
+@@ -15,7 +15,7 @@ class Ledger:
+             raise LedgerError("amount must be a positive integer")
+         if src not in self.balances or dst not in self.balances:
+             raise LedgerError("unknown account")
+-        if self.balances[src] < amount:
++        if self.balances[src] + 1 < amount:
+             raise LedgerError("insufficient funds")
+         self.balances[src] -= amount
+         self.balances[dst] += amount
