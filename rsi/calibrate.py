@@ -24,7 +24,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
-from . import archive, build, combine, gate
+from . import archive, build, combine, gate, mine
 from .config import CONFIG
 from .store import read_json, read_jsonl
 
@@ -128,6 +128,15 @@ def record(task_dir: Path, diff: dict, rounds: int, kind: str = "calibrate") -> 
     return row
 
 
+def _mine(task_dir: Path) -> None:
+    """Read the failed attempts for the slips they made. Never lets a reading error cost a calibration."""
+    if CONFIG.mine:
+        try:
+            mine.run(task_dir)
+        except Exception as e:  # noqa: BLE001
+            print(f"mine: skipped ({type(e).__name__}: {e})")
+
+
 def run(task_dir: Path, modes_path: Path | None = None) -> bool:
     prev = None
     for rnd in range(CONFIG.max_calibration_rounds):
@@ -149,6 +158,7 @@ def run(task_dir: Path, modes_path: Path | None = None) -> bool:
         if verdicts == {"in_band"}:
             record(task_dir, diff, rnd + 1)
             archive.admit(task_dir, diff)
+            _mine(task_dir)
             print(f"calibrate: IN BAND\n{gate.summary(task_dir)}")
             return True
         if "too_easy" in verdicts:
@@ -169,6 +179,7 @@ def run(task_dir: Path, modes_path: Path | None = None) -> bool:
         # need_more: loop again with the same checksum, counts pool
     diff = _difficulty(task_dir)
     record(task_dir, diff, CONFIG.max_calibration_rounds)
+    _mine(task_dir)
     print(f"calibrate: gave up after {CONFIG.max_calibration_rounds} rounds\n{gate.summary(task_dir)}")
     return False
 

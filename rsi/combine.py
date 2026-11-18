@@ -257,7 +257,7 @@ def design(modes: list[dict], k: int, rng: random.Random, tries: int = 3) -> dic
         text = "\n".join(
             f"- {m['id']}: {m['mode']} (textbook build: {m.get('textbook_build', '?')}; "
             f"hidden case: {m.get('hidden_case', '?')}; evidence: "
-            f"{', '.join(p['url'] for p in m.get('papers', [])) or m.get('evidence', '')}; "
+            f"{', '.join(p['url'] for p in m.get('papers', [])) or m.get('evidence', '')} [{m.get('tier', 'unrated')}]; "
             f"measured: handled in {st.handled.get(m['id'], 0):g} of {st.handled.get(m['id'], 0) + st.slips.get(m['id'], 0):g} attempts)"
             for m in chosen
         )

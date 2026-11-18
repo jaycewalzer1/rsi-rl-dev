@@ -64,6 +64,9 @@ class Config:
     # handles more, so old slips are weak evidence about it)
     stale_weight: float = float(_env("RSI_STALE_WEIGHT", "0.25"))
 
+    # after calibration, read each failed attempt's patch for the slip it made (rsi/mine.py)
+    mine: bool = _env("RSI_MINE", "1") != "0"
+
     # a design this similar (0..1, word n-gram cosine) to a task already in the pool is a copy
     novelty_max: float = float(_env("RSI_NOVELTY_MAX", "0.6"))
 

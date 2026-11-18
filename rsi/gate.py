@@ -235,7 +235,7 @@ def judge_shortcut(task_dir: Path, patch: str) -> dict:
     v = llm.ask_json(SHORTCUT_JUDGE.format(
         ticket=(task_dir / "instruction.md").read_text(), patch=patch[:40000],
         reference=(task_dir / "solution" / "reference.patch").read_text()[:40000]), CONFIG.judge_model)
-    quoted = [e for e in v.get("evidence", []) if e.strip() and e.strip().lstrip("+- ") in patch]
+    quoted = [e for e in v.get("evidence", []) if len(core := e.strip().lstrip("+- ").strip()) >= 8 and core in patch]
     real = v.get("verdict") == "implementation" and bool(quoted)
     return {"verdict": "implementation" if real else "shortcut", "evidence": quoted[:5], "why": str(v.get("why", ""))[:400],
             "judge_model": CONFIG.judge_model}

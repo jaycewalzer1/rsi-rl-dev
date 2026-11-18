@@ -5,7 +5,15 @@ Semantic Scholar, then a judge model reads the abstracts and keeps only papers
 that actually measure or describe that failure. A failure mode survives only
 with at least one complaint AND at least one supporting paper. Seed modes
 (seeds/failure_modes.json, sourced during the Frist hackathon) are merged in so
-the pipeline has a pool even on a quiet day.
+the pipeline has a pool even on a quiet day, and so are the modes read out of
+this factory's own failed attempts (rsi/mine.py).
+
+Every mode in the pool carries a `tier` saying how good its evidence is, best first:
+    measured      solvers slipped on it in this factory (history, or read from rollouts)
+    paper+field   a paper measures it and a practitioner reported it
+    paper         a paper measures it
+    field         a practitioner reported it in full (X API, Hacker News, a blog)
+    snippet       only a search-result snippet says so
 """
 
 from __future__ import annotations
@@ -138,9 +146,27 @@ def cross_reference(complaints: list[dict]) -> list[dict]:
     return [m for cat, items in by_category(complaints).items() if (m := read_category(cat, items))]
 
 
+def tier(mode: dict, measured: set[str] = frozenset()) -> str:
+    field = any(c.get("provenance") != "web_snippet" for c in mode.get("complaints", []))
+    if mode.get("origin") == "rollout" or mode["id"] in measured:
+        return "measured"
+    if mode.get("papers"):
+        return "paper+field" if field else "paper"
+    return "field" if field else "snippet"
+
+
 def merge_seeds(modes: list[dict]) -> list[dict]:
+    """The scan's modes, then the seeds, then modes read from this factory's failed attempts;
+    each tagged with how good its evidence is."""
+    from . import combine, mine  # both import this module's siblings; keep the import local
+
     seen = {m["id"] for m in modes}
-    return modes + [{**s, "origin": "seed"} for s in read_json(SEEDS) if s["id"] not in seen]
+    modes = modes + [{**s, "origin": "seed"} for s in read_json(SEEDS) if s["id"] not in seen]
+    seen = {m["id"] for m in modes}
+    modes += [m for m in mine.modes() if m["id"] not in seen]
+    st = combine.stats()
+    measured = {m for m, n in st.slips.items() if n > 0}
+    return [{**m, "tier": tier(m, measured)} for m in modes]
 
 
 def run(out_dir: Path) -> Path:
@@ -149,5 +175,6 @@ def run(out_dir: Path) -> Path:
     path = out_dir / "failure_modes.json"
     write_json(path, modes)
     fresh = sum(m["origin"] == "scan" for m in modes)
-    print(f"papers: {fresh} modes backed by complaint + paper, {len(modes) - fresh} seeds -> {path}")
+    tiers = {t: sum(m["tier"] == t for m in modes) for t in ("measured", "paper+field", "paper", "field", "snippet")}
+    print(f"papers: {fresh} modes backed by complaint + paper, {len(modes) - fresh} seeds or mined; evidence {tiers} -> {path}")
     return path

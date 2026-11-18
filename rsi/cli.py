@@ -8,6 +8,8 @@
   rsi gate     TASK_DIR [--stages a,b]    stage 5, the testing suite
   rsi summary  TASK_DIR                   stage results, STALE if the task changed
   rsi calibrate TASK_DIR                  stage 6, hold the pass rate in the band
+  rsi mine     TASK_DIR | --promote       read a task's failed attempts for the slips they made;
+                                          --promote groups slips of a new kind into failure modes
   rsi pool                                the calibrated tasks: active and retired
   rsi recheck  [--task NAME] [--attempts N]
                                           measure the active tasks again with today's solvers;
@@ -28,7 +30,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import archive, build, calibrate, combine, gate, papers, scan_x
+from . import archive, build, calibrate, combine, gate, mine, papers, scan_x
 from .config import CONFIG
 
 
@@ -73,6 +75,9 @@ def main(argv: list[str] | None = None) -> int:
         p = sub.add_parser(name)
         p.add_argument("task_dir", type=Path)
         p.add_argument("--stages")
+    p = sub.add_parser("mine")
+    p.add_argument("task_dir", type=Path, nargs="?")
+    p.add_argument("--promote", action="store_true")
     sub.add_parser("pool")
     p = sub.add_parser("recheck")
     p.add_argument("--task", action="append", help="only this task (repeatable); default: every active task")
@@ -82,6 +87,12 @@ def main(argv: list[str] | None = None) -> int:
     print(f"models: author {CONFIG.author_model}, judge {CONFIG.judge_model}, "
           f"solvers {', '.join(CONFIG.solver_models)} via {CONFIG.solver_agent}")
 
+    if a.cmd == "mine":
+        if a.task_dir:
+            mine.run(a.task_dir)
+        if a.promote:
+            mine.promote(papers.merge_seeds([]))
+        return 0
     if a.cmd == "pool":
         print(archive.listing())
         return 0

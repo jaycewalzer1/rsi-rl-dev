@@ -255,3 +255,41 @@ see a duplicate in other words. Only the judged layer can, and its accuracy is u
 novelty reward for the generator: there is no generator to reward.
 
 **Status.** Built. `tests/test_archive.py`, Harbor and the reviewer faked.
+
+## 8. Failure modes from the factory's own rollouts
+
+**The work.** AutoEnvScaling (arXiv:2610.14163) closes the loop the other papers leave
+open: a proposer agent builds the next environments from the rollouts of the solver being
+trained, and that solver's new rollouts guide the round after. On the analysis side,
+AgentRx (arXiv:2602.02475) localises the critical failure step in a trajectory with an
+auditable log of evidence, AdaMAST (arXiv:2607.16387) induces a failure taxonomy from
+traces with no hand-written codes, and a 2026 study of research agents (arXiv:2608.14905)
+has its judge agent back every finding with a file name or line that can be checked.
+
+**The weakness it fixes here.** Failure modes came from X and Hacker News complaints
+checked against papers. Without an X API token the scan sees search snippets, and most
+seed modes had no complaint attached at all. Meanwhile the loop was producing much better
+evidence and throwing it away: for every failed attempt, the exact patch the solver wrote
+and the hidden tests that caught it.
+
+**What this repo does.** `rsi/mine.py`, run after every calibration (`RSI_MINE=0` to skip):
+- **read**: one judge reading per distinct failed attempt, given the ticket, the reference,
+  the attempt's `agent.patch` and its failing tests by criterion. It says what the attempt
+  built for each failed criterion and whether that is the mode the criterion was built on.
+  A reading must quote the attempt's patch; quotes are string-matched, and a reading with
+  none that match is dropped.
+- **file**: `runs/mined.jsonl`.
+- **promote**: `rsi mine --promote` groups slips of a different kind into candidate modes.
+  A group becomes a mode only if it is new and at least two attempts show it. The pool
+  builder adds it with origin `rollout`.
+- **tiers**: every mode in `failure_modes.json` now says how good its evidence is, best
+  first: measured (slipped on in this factory), paper+field, paper, field, snippet. The
+  design prompt shows it.
+
+**Left out.** AutoEnvScaling's proposer is an agent that builds whole environments from
+rollouts and is itself trained in one of its settings. Here the rollouts feed a list of
+modes and a judge, and nothing is trained. The reading sees the final patch, not the
+trajectory, so it cannot say where in the session the agent went wrong (AgentRx's
+question).
+
+**Status.** Built. `tests/test_mine.py`, judge faked. Not yet run on real attempts.
