@@ -17,7 +17,8 @@ task guideline (arXiv:2604.28093) lists six kinds of bad task, two of them about
 tests that validate the wrong things, and reward hacking through environment leakage. Auto
 Benchmark Audit (arXiv:2605.26079) ran an agent over 168 benchmarks and reports ambiguous
 design, environment conflicts or wrong ground truth in over 25.7% of tasks; dropping the
-flagged tasks moved SWE-bench Verified and Terminal-Bench 2 scores by about ten points.
+flagged tasks raised average performance on SWE-bench Verified and Terminal-Bench 2 by
+9.9% and 9.6%.
 
 **What this repo does.** `rsi/audit.py` is a gate stage that needs no model and no Docker.
 It blocks a task when:
@@ -41,12 +42,13 @@ red-team stage and the replay (section 3) cover part of that.
 
 ## 2. Reward integrity: a verifier the candidate cannot reach
 
-**The work.** TRACE (arXiv:2601.20103, ICML 2026) catalogues 54 kinds of reward exploit in
-code environments and shows LLM judges miss many of them. Countdown-Code (a testbed for
-reward hacking under RL with verifiable rewards) reports small Qwen models learning to edit
-the verifier within a few hundred RL steps once the exploit is reachable. The lesson both
-draw: an environment used for training has to make the exploit unreachable, because a
-judge reading trajectories afterwards will not catch it reliably.
+**The work.** TRACE (arXiv:2601.20103, ICML 2026) builds a taxonomy of 54 kinds of reward
+exploit in code environments and a benchmark of how well LLM judges detect them.
+Countdown-Code (arXiv:2603.07084) is a minimal environment where a model can either solve
+the task or manipulate the test harness; it finds that as little as 1% of reward-hacking
+trajectories in fine-tuning data is enough for a model to pick the hack up, and that RL
+then amplifies it. The lesson for a training environment: make the exploit unreachable,
+because once it is reachable it gets learned, and catching it afterwards depends on a judge.
 
 **What was wrong here.** The first exported family verifier imported the candidate's
 `solve()` into the pytest process, with `expected.json` on the disk beside it. Two cheats of
@@ -77,10 +79,11 @@ Harbor.
 
 ## 3. Reward integrity: red team and replay
 
-**The work.** The Terminal-Bench guideline (arXiv:2604.28093) recommends "please hack" trials,
-with the test signatures put in the prompt, to find exploitable tasks before release. TRACE
-(arXiv:2601.20103) finds judges detect exploits better when they compare a suspect
-trajectory with benign ones than when they classify it alone. SWE-bench style evaluation
+**The work.** The Terminal-Bench guideline (arXiv:2604.28093) recommends trials in which the
+agent is asked to hack the task, with the test signatures put in the prompt, to find
+exploitable tasks before release. TRACE (arXiv:2601.20103) frames detection as contrastive:
+a judge does better comparing a suspect trajectory with benign ones than classifying it
+alone. SWE-bench style evaluation
 applies the model's patch in a clean container, so nothing the agent did outside the repo
 can touch the grade.
 
@@ -145,8 +148,8 @@ a generated environment reached F1 47.1% against an external label; three indepe
 reviews with an any-reject rule reached 87.0%. LHAW (arXiv:2602.10525) makes the wider
 point about ambiguity: do not ask a model whether a task is underspecified, run agents and
 classify by whether their end states diverge. The Terminal-Bench guideline asks the same of
-task authors: instructions specified well enough "that meeting them implies passing the
-tests", and failures reviewed in batches.
+task authors: instructions specified well enough that meeting them means passing the tests,
+and failures reviewed in batches.
 
 **What this repo already had, and it is the strong part.** Every failing test of a failed
 attempt must map to a ticket sentence quoted word for word, and the quote is checked against
@@ -174,9 +177,10 @@ judge here is a frontier model on tickets, and nobody has measured its review ac
 - Curriculum design: Sampling for Learnability (Rutherford et al., NeurIPS 2024,
   arXiv:2408.15099) shows that regret-style scores in practice track success rate, and that
   scoring levels by p(1-p), the ones solved sometimes and not always, works better. A 2026
-  survey post on environment scaling puts it as "difficulty and training value are simply
-  different axes": with a binary reward the variance p(1-p) is the signal a group-relative
-  method like GRPO can use, and it is zero at both ends.
+  survey post, "Environment Scaling for Agentic RL", makes the same point for LLM agents:
+  difficulty and training value are different axes, because with a binary reward the
+  variance p(1-p) is the signal a group-relative method like GRPO can use, and it is zero
+  at both ends.
 - Psychometrics: work on agentic coding benchmarks fits item response models to predict
   per-task success before running agents (Agent Psychometrics, arXiv:2604.00594), and a
   mid-range filter (keep tasks with 30 to 70% pass rate, arXiv:2603.23749) cuts evaluation
@@ -228,8 +232,9 @@ and has a foundation model judge whether a new one is interestingly new. EvoEnv
 (arXiv:2605.14392) admits an environment only if its similarity to the admitted cache (half
 prompt embedding, half code embedding, a frozen MiniLM) stays under 0.80, rotates
 environments out of the active pool, and reuses retired ones as few-shot examples for the
-generator. EvoEnv's own limitation is the one that mattered here too: calibration is a
-one-time check against the solver of that moment.
+generator. One thing EvoEnv does not describe is re-validating an admitted environment
+later: calibration is a single check against the solver of that moment. That gap mattered
+here too.
 
 **What was here.** No memory of tasks at all. Nothing stopped `combine` from designing the
 same task twice, and a task calibrated against Opus 5.5 stayed "in band" forever.
@@ -287,8 +292,8 @@ and the hidden tests that caught it.
   design prompt shows it.
 
 **Left out.** AutoEnvScaling's proposer is an agent that builds whole environments from
-rollouts and is itself trained in one of its settings. Here the rollouts feed a list of
-modes and a judge, and nothing is trained. The reading sees the final patch, not the
+rollouts, and in one of its settings the same open model is both proposer and solver. Here
+the rollouts feed a list of modes and a judge, and nothing is trained. The reading sees the final patch, not the
 trajectory, so it cannot say where in the session the agent went wrong (AgentRx's
 question).
 
@@ -311,8 +316,8 @@ question).
   data is reward-hacking trajectories, the model internalises the hack and it resurfaces
   under RL.
 
-**What was wrong here.** The README called this leg RL-flavoured post-training without
-naming the method. It is RFT. The reward is the only teacher, as the README said, but there
+**What was wrong here.** The README described this leg as post-training without naming
+the method. It is RFT. The reward is the only teacher, as the README said, but there
 is no policy gradient, and an interviewer will ask.
 
 **What changed.** `rsi/qwen.py`:
@@ -381,3 +386,18 @@ beyond Claude Code's own permission rules. Any result.
 repository with the session faked, including each way a generation gets rejected. The
 Claude Code flags the session uses were checked to parse on Claude Code 2.1.327. No real
 generation has been run: there are no measured tasks in this checkout to reason from.
+
+## What all of this still needs
+
+Every section above ends in "built". None ends in "live". The order to change that:
+
+1. `uv run rsi gate examples/tasks/smoke-ledger --stages audit,oracle,nop,mutations`
+   (Docker, no model): the smoke task's `test.sh` changed in section 3.
+2. `uv run rsi family-task --run check1`, then the gate command it prints (Docker, no
+   model): the new family verifier (section 2) under Harbor for the first time.
+3. `uv run rsi loop --tasks 3`: replay, the three red-team prompts, hinted attempts, the
+   three-review inspect, the history rows and the rollout reader (sections 3 to 8) with
+   real solvers. Read `authoring/gate/*.json` of the first task by hand.
+4. `uv run rsi qwen --run <a factory run>`, then `--arm single` and `--arm stacked`
+   (section 9).
+5. `uv run rsi improve`, then `--live` (section 10).

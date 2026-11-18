@@ -1,10 +1,22 @@
 # rsi-rl-dev
 
-A self-improving factory for RL coding environments. It reads what developers complain about
-on X, checks each complaint against published research, stacks several real failure modes into
-one task, and uses [Harbor](https://github.com/harbor-framework/harbor) to hold every task at
-about a **25% pass rate for frontier models**: hard enough to teach something, possible enough to
-give a learning signal.
+A factory for RL coding environments that improves itself where that is possible to check. It
+takes the ways coding agents fail (from practitioners, from papers, and from its own failed
+attempts), stacks several into one task, and uses [Harbor](https://github.com/harbor-framework/harbor)
+to hold every task at about a **25% pass rate for frontier models**: hard enough to teach
+something, possible enough to give a learning signal.
+
+What "self-improving" means here, exactly:
+- **Inside a run**, the design policy learns from every measured task which failure modes the
+  current solver slips on and aims the next design at the band.
+- **Across runs**, `rsi improve` has Claude Code change the factory's own code and prompts, and
+  a part of the repo it cannot edit decides whether a change stays
+  ([`docs/RSI_LOOP.md`](docs/RSI_LOOP.md)).
+- **Not** the model that writes the tasks. Its weights are never trained, and
+  [`docs/WHY_NOT_TRAIN_THE_AUTHOR.md`](docs/WHY_NOT_TRAIN_THE_AUTHOR.md) says why.
+
+[`docs/RESEARCH.md`](docs/RESEARCH.md) maps every part to the published work it follows, what
+was left out, and what has and has not been run.
 
 Built from what we learned at the Frist RL-task hackathon (Nov 15 2026): every first task design came
 out too easy, and the difficulty rules in [`docs/DIFFICULTY_RULES.md`](docs/DIFFICULTY_RULES.md)
@@ -15,28 +27,35 @@ starting history and the author model's worked examples.
 ## The loop
 
 ```
- X posts ──► scan ──► complaints.jsonl      concrete failures only (judge drops venting, jokes)
-                          │
- arXiv + Semantic ──► papers ──► failure_modes.json   a mode survives only with a complaint AND a paper
- Scholar                  │                           (+ seed modes from seeds/failure_modes.json)
-                          ▼
-                       combine ──► design.json        ≥3 independent modes, central-change review
-                          │        ▲
-                          ▼        │  runs/history.jsonl: which modes actually made solvers slip
-                        build ──► Harbor task dir     (docs/TASK_CONTRACT.md)
-                          │        │
-                          ▼        │
-          ┌──────────── gate (testing suite) ─────────────┐
-          │ shape · oracle ×3 · nop · mutations · shortcut │
-          │ difficulty (K cold attempts) · inspect         │
-          └──────────────────────┬─────────────────────────┘
+ X + HN posts ──► scan ──► complaints.jsonl    concrete failures only (judge drops venting, jokes)
+                             │
+ arXiv + Semantic ──► papers ──► failure_modes.json   a mode needs a complaint AND a paper, or to have
+ Scholar                     │      ▲                 been read out of this factory's own failed
+                             │      │                 attempts; each mode is tagged with its evidence
+                             ▼      │
+                          combine ──┼──► design.json   3-4 modes whose predicted pass rate is nearest the
+                             │      │                  target; central-change and duplicate review
+                             ▼      │
+                           build ───┼──► Harbor task   (docs/TASK_CONTRACT.md)
+                             │      │
+                             ▼      │
+        ┌───────────────── gate (testing suite) ─────────────────┐
+        │ shape · audit · oracle ×3 · nop · mutations · shortcut  │
+        │ difficulty (K cold attempts, passes replayed) · hinted  │
+        │ inspect (3 reviews)                                     │
+        └────────────────────────┬────────────────────────────────┘
                                  ▼
                              calibrate
-              too easy  → add a criterion from a fresh failure mode
+              too easy  → add the mode that would land it on target
               too hard  → hinted attempts decide: possible → drop the case family most
                           attempts miss; unproven → fix the tests nobody passed
               unfair    → restate the ticket sentence or drop the cases
-              in band   → record mode slips in history, done
+              in band   → history row, into the pool
+                                 │
+                                 ▼
+          history.jsonl  who slipped on which modes, together or apart ──► combine
+          mine           what each failed attempt built, read from its patch ──► failure modes
+          archive.jsonl  the pool: novelty check, `rsi recheck` when the solver changes, retirement
 ```
 
 The feedback inside the loop: every calibrated task writes to `runs/history.jsonl` which failure
@@ -74,11 +93,13 @@ uv run rsi pool                                                # calibrated task
 uv run rsi recheck                                             # re-measure them when the solver changes
 ```
 
-Try the gate on the bundled smoke task (Docker only, no model calls):
+Try the gate without spending a model call:
 
 ```bash
-uv run rsi gate examples/tasks/smoke-ledger --stages oracle,nop,mutations
 uv run python -m rsi.audit examples/tasks/smoke-ledger         # the static audit alone, no Docker
+uv run rsi gate examples/tasks/smoke-ledger --stages audit,oracle,nop,mutations   # Docker (it is too small to pass shape, on purpose)
+uv run rsi family-task --run check1                            # the shipped task family as a Harbor task;
+                                                               # it prints the gate command to run on it
 ```
 
 ## The testing suite
@@ -216,10 +237,27 @@ records solver model and agent.
 
 ## Status
 
-- Verified live: Harbor oracle / nop / mutation stages on the smoke task (Docker, local), and
-  scan + papers (web-snippet fallback, Sonnet 5.5 judge): 13 concrete complaints, 5 paper-backed modes.
-- Unit tests: `uv run pytest`.
-- The difficulty, shortcut and calibrate stages need solver credentials for Harbor and spend
-  real model time: a full calibration is roughly 8 to 32 frontier-agent attempts per task.
+Run for real, before the research-sync branch:
+- Harbor oracle / nop / mutation stages on the smoke task (Docker, local), and scan + papers
+  (web-snippet fallback, Sonnet 5.5 judge): 13 concrete complaints, 5 paper-backed modes.
+- The six hackathon tasks in `examples/frist-hackathon/`.
+
+Built on the research-sync branch and checked by unit tests only (`uv run pytest`: no Docker,
+no model): the audit stage, the three-phase family verifier (its real `test.sh`
+runs outside Docker in `tests/test_verifier.py`, with cheats), replay, the three red-team
+prompts, the hinted stage, the three-review inspect, the stack-prediction policy, the archive,
+the rollout reader, the Qwen arms and reward-variance report, and the improvement loop (whole
+generations in a throwaway git repo with the session faked). None of it has been through
+Harbor or a real model yet. `docs/RESEARCH.md` ends with the order to run things in.
+
+Not done: no Qwen run (there is no `REPORT.md` anywhere), no generation of `rsi improve`.
+
+Costs to know before a first run:
+- A full calibration is roughly 8 to 32 frontier-agent attempts per task. On top of that the
+  gate now spends 3 red-team attempts per task (was 1), 4 hinted attempts when nobody solves a
+  task cold, one Docker-only replay per pass, 3 judge calls per distinct failure in inspect
+  (was 1 per attempt), and 1 judge call per distinct failed attempt in the rollout reader.
+  `RSI_REPLAY=0`, `RSI_HINTED=off`, `RSI_INSPECT_REVIEWS=1` and `RSI_MINE=0` turn each back off.
+- `rsi improve --live N` runs the whole pipeline 2N times.
 - The X scan without an API token sees only search snippets (x.com refuses fetchers), so its
-  evidence is marked `web_snippet` and weighted as weaker.
+  evidence is tagged `snippet`, the weakest tier.

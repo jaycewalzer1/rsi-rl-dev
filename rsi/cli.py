@@ -24,6 +24,8 @@
   rsi factory  --run NAME --business DIR [--modes-from RUN] [--families 3] [--only STAGES]
                                           business data in, proven task families and Harbor tasks out:
                                           intake, scan + papers, author agents, export, gate
+  rsi family-task --run NAME              export the shipped shoe-store family as a Harbor task, no model
+                                          needed: the quickest way to run a family task through the gate
   rsi qwen     --run NAME [--rounds N]    queue the Qwen leg on kokopelli's GPU queue:
                                           calibrate to the 25% band, benchmark, post-train, benchmark
   rsi demo     --run NAME [--port 8791]   the demo page, live or replay
@@ -63,6 +65,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--rows", type=int, default=1500, help="root-table rows per data slice")
     p.add_argument("--gate", default="shape,audit,oracle,nop,mutations", help="gate stages for the exported tasks")
     p.add_argument("--only", help="comma list of stages to (re)run: intake,modes,author,export,gate")
+    p = sub.add_parser("family-task")
+    p.add_argument("--run", required=True)
+    p.add_argument("--rules", default="window,dedupe,discount", help="comma list of the family's rules to switch on")
     p = sub.add_parser("qwen")
     p.add_argument("--run", required=True)
     p.add_argument("--rounds", type=int, default=3)
@@ -142,6 +147,15 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         return 0 if calibrate.run(a.task_dir) else 1
 
+    if a.cmd == "family-task":
+        from . import business_gen, family as F, intake
+        out = run_dir(a.run)
+        business_gen.write_csv(business_gen.generate(7), out / "raw")
+        dbs = F.load_dbs(intake.run(out / "raw", out, stewards=False, rows=800))
+        fam = F.load(F.BUILTIN / "shoe_store.py")
+        d = F.export_harbor(fam, F.Task(fam.id, tuple(a.rules.split(",")), fam.params_choices(dbs[0])[1]), dbs, out / "task")
+        print(f"family-task: {d}\nnext: uv run rsi gate {d} --stages shape,audit,oracle,nop,mutations")
+        return 0
     if a.cmd in ("factory", "qwen", "demo"):
         return _factory(a)
 
