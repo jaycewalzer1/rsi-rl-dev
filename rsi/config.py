@@ -31,6 +31,8 @@ class Config:
     redteam_models: tuple[str, ...] = tuple(
         _env("RSI_REDTEAM_MODELS", _env("RSI_SOLVER_MODELS", "anthropic/claude-opus-5-5")).split(",")
     )
+    # red-team a task once it is in band, before it joins the pool (three attempts per red-team model)
+    redteam: bool = _env("RSI_REDTEAM", "1") != "0"
     # replay every passing attempt's recorded patch in a clean container; only a pass that
     # survives counts (set RSI_REPLAY=0 to trust the in-container reward)
     replay: bool = _env("RSI_REPLAY", "1") != "0"

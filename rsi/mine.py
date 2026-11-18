@@ -98,10 +98,11 @@ def read_attempt(task_dir: Path, attempt: dict) -> list[dict]:
     """One judge reading of one failed attempt; only readings that quote the patch survive."""
     criteria = json.loads((task_dir / "authoring" / "criteria.json").read_text())
     failed = set(attempt["failed"])
+    slipped = gate.slipped_criteria(attempt["failed"], criteria)
     blocks = []
     for c in criteria:
         hit = [t for t in c.get("tests", []) if t in failed]
-        if hit:
+        if hit and c["id"] in slipped:
             how = "; ".join(f"{t}: {attempt['messages'].get(t, '')}".rstrip(": ") for t in hit[:6])
             blocks.append(f"- {c['id']} (mode {c.get('mode', '?')}): \"{c.get('sentence') or c.get('text', '')}\"\n  failing: {how}")
     if not blocks:

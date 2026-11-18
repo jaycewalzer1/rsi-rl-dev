@@ -7,7 +7,8 @@
       too_hard          -> hinted attempts (told every criterion and trap) decide which:
                              feasible  -> revise: drop the case family most failed attempts miss
                              unproven  -> revise: fix the tests even hinted attempts all fail
-      in_band           -> done
+      in_band           -> red-team it (the shortcut stage); a pass without the feature sends it
+                           back to have its tests strengthened; otherwise done: history, pool
     after every revision: shape, audit, oracle, nop and mutations again before re-measuring
 
 Every finished task appends a row to runs/history.jsonl: per solver model, how many attempts
@@ -38,15 +39,19 @@ def _pooled(prev: dict | None, new: dict, task_dir: Path) -> dict:
     return gate.pool_difficulty(task_dir, prev, new)
 
 
-def mode_slips(task_dir: Path, diff: dict) -> dict[str, int]:
-    """Per failure mode: how many graded attempts failed at least one of its tests."""
+def _modes(task_dir: Path, failed: list[str]) -> list[str]:
+    """The failure modes one attempt slipped on (gate.slipped_criteria decides which criteria)."""
     criteria = json.loads((task_dir / "authoring" / "criteria.json").read_text())
-    test_mode = {t: c.get("mode", c["id"]) for c in criteria for t in c.get("tests", [])}
+    mode = {c["id"]: c.get("mode", c["id"]) for c in criteria}
+    return sorted({mode[c] for c in gate.slipped_criteria(failed, criteria)})
+
+
+def mode_slips(task_dir: Path, diff: dict) -> dict[str, int]:
+    """Per failure mode: how many graded attempts slipped on it."""
     slips: Counter = Counter()
     for m in diff["models"].values():
         for failed in m["failed_tests"].values():
-            for mode in {test_mode.get(t) for t in failed} - {None}:
-                slips[mode] += 1
+            slips.update(_modes(task_dir, failed))
     return dict(slips)
 
 
@@ -63,9 +68,7 @@ def hardest_family(task_dir: Path, diff: dict) -> str:
 def slip_patterns(task_dir: Path, model_result: dict) -> dict:
     """Per graded attempt of one solver: which modes it slipped on. {"solved": k, "slips": [[mode, ...], ...]},
     one list per attempt that did not pass (empty when its failing tests map to no mode)."""
-    criteria = json.loads((task_dir / "authoring" / "criteria.json").read_text())
-    test_mode = {t: c.get("mode", c["id"]) for c in criteria for t in c.get("tests", [])}
-    slips = [sorted({test_mode.get(t) for t in failed} - {None}) for failed in model_result["failed_tests"].values()]
+    slips = [_modes(task_dir, failed) for failed in model_result["failed_tests"].values()]
     slips += [[] for _ in model_result.get("unreproduced", [])]
     return {"solved": model_result["solved"], "slips": slips}
 
@@ -110,6 +113,14 @@ def record(task_dir: Path, diff: dict, rounds: int, kind: str = "calibrate") -> 
     return row
 
 
+def _red_team(task_dir: Path) -> dict:
+    """The shortcut stage for this version of the task: run once, reused if the task has not changed."""
+    if not CONFIG.redteam:
+        return {"ok": True, "skipped": True}
+    old = _read_gate(task_dir, "shortcut.json")
+    return old if old.get("checksum") == gate.checksum(task_dir) else gate.stage_shortcut(task_dir)
+
+
 def _mine(task_dir: Path) -> None:
     """Read the failed attempts for the slips they made. Never lets a reading error cost a calibration."""
     if CONFIG.mine:
@@ -138,6 +149,14 @@ def run(task_dir: Path, modes_path: Path | None = None) -> bool:
 
         verdicts = {m["verdict"] for m in diff["models"].values()}
         if verdicts == {"in_band"}:
+            red = _red_team(task_dir)
+            if not red["ok"]:
+                build.revise(task_dir, red, "The pass rate is in the band, but red-team attempts got full reward without building the "
+                             "feature (see `attempts`: outcome `shortcut` or `unreplayed`). Strengthen the hidden tests until each of "
+                             "those patches fails by assertion: test beyond the ticket's examples and compare whole values against a "
+                             "live twin. Do not change the ticket. If an attempt is `unreplayed`, make tests/test.sh record agent.patch.")
+                prev = None
+                continue
             record(task_dir, diff, rnd + 1)
             archive.admit(task_dir, diff)
             _mine(task_dir)
@@ -155,13 +174,13 @@ def run(task_dir: Path, modes_path: Path | None = None) -> bool:
             prev = None
         elif "too_hard" in verdicts:
             fam = hardest_family(task_dir, diff)
-            proof = f" Hinted attempts solved it {hinted['solved']}/{hinted['graded']}, so it is possible and the ticket is enough." if hinted.get("solved") else ""
+            proof = f" Hinted attempts solved it {hinted['solved']}/{hinted['graded']}, so it is possible." if hinted.get("solved") else ""
             build.revise(task_dir, diff, f"Too hard (no or almost no full solves).{proof} Remove the hidden cases of criterion {fam} that most failed attempts miss, keep its ticket sentence, keep one case so the mutation is still caught.")
             prev = None
         # need_more: loop again with the same checksum, counts pool
-    diff = _difficulty(task_dir)
-    record(task_dir, diff, CONFIG.max_calibration_rounds)
-    _mine(task_dir)
+    if (task_dir / "authoring" / "gate" / "difficulty.json").exists():  # absent when no version ever passed the pre-measure stages
+        record(task_dir, _difficulty(task_dir), CONFIG.max_calibration_rounds)
+        _mine(task_dir)
     print(f"calibrate: gave up after {CONFIG.max_calibration_rounds} rounds\n{gate.summary(task_dir)}")
     return False
 

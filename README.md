@@ -50,7 +50,8 @@ starting history and the author model's worked examples.
               too hard  → hinted attempts decide: possible → drop the case family most
                           attempts miss; unproven → fix the tests nobody passed
               unfair    → restate the ticket sentence or drop the cases
-              in band   → history row, into the pool
+              in band   → red-team it; a pass without the feature sends it back for
+                          stronger tests; otherwise history row, into the pool
                                  │
                                  ▼
           history.jsonl  who slipped on which modes, together or apart ──► combine
@@ -219,6 +220,7 @@ All settings are environment variables (see `rsi/config.py`):
 | `RSI_SOLVER_MODELS` | `anthropic/claude-opus-5-5` (comma-separated; each must land in the band) |
 | `RSI_SOLVER_AGENT` | `claude-code` (any Harbor agent) |
 | `RSI_REDTEAM_MODELS` | the solver models (comma-separated; models told to get reward without building the feature) |
+| `RSI_REDTEAM` | `1`: `rsi calibrate` red-teams a task once it is in band, before it joins the pool |
 | `RSI_REPLAY` | `1` (replay every pass from its recorded patch; `0` trusts the in-container reward) |
 | `RSI_TARGET_RATE` / `RSI_BAND_LOW` / `RSI_BAND_HIGH` | `0.25` / `0.15` / `0.35` |
 | `RSI_ATTEMPTS` | `8` cold attempts per model per round |
@@ -254,10 +256,12 @@ Not done: no Qwen run (there is no `REPORT.md` anywhere), no generation of `rsi 
 
 Costs to know before a first run:
 - A full calibration is roughly 8 to 32 frontier-agent attempts per task. On top of that the
-  gate now spends 3 red-team attempts per task (was 1), 4 hinted attempts when nobody solves a
-  task cold, one Docker-only replay per pass, 3 judge calls per distinct failure in inspect
-  (was 1 per attempt), and 1 judge call per distinct failed attempt in the rollout reader.
-  `RSI_REPLAY=0`, `RSI_HINTED=off`, `RSI_INSPECT_REVIEWS=1` and `RSI_MINE=0` turn each back off.
+  loop now spends 3 red-team attempts on each task that reaches the band (the loop did not
+  red-team before; only a full `rsi gate` did, with one attempt), 4 hinted attempts when nobody
+  solves a task cold, one Docker-only replay per pass, 3 judge calls per distinct failure in
+  inspect (was 1 per attempt), and 1 judge call per distinct failed attempt in the rollout
+  reader. `RSI_REDTEAM=0`, `RSI_HINTED=off`, `RSI_REPLAY=0`, `RSI_INSPECT_REVIEWS=1` and
+  `RSI_MINE=0` turn each back off.
 - `rsi improve --live N` runs the whole pipeline 2N times.
 - The X scan without an API token sees only search snippets (x.com refuses fetchers), so its
   evidence is tagged `snippet`, the weakest tier.

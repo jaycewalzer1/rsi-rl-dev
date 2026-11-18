@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from rsi import calibrate, combine
+from rsi import calibrate, combine, gate
 
 SOLVER = "anthropic/claude-opus-5-5"
 
@@ -95,3 +95,13 @@ def test_record_keeps_who_slipped_on_what_together_and_the_first_shot(tmp_path, 
     assert (r["predicted"], r["first_rate"], r["design_score"], r["kind"]) == (0.3, 0.5, 0.6, "calibrate")
     st = combine.stats()  # and the next design reads it back
     assert st.slips["a"] == 2 and st.handled["a"] == 2 and st.pairs[frozenset(("a", "b"))][0] == 4
+
+
+def test_a_test_shared_by_two_criteria_is_not_booked_as_two_slips():
+    """In a task family one answer key can be changed by two rules. Forgetting one rule fails the
+    keys it shares with the other; that is one slip, on the rule whose own keys failed."""
+    crit = [{"id": "AC1", "tests": ["a", "ab", "abc"]}, {"id": "AC2", "tests": ["b", "ab", "abc"]}, {"id": "AC3", "tests": ["c", "abc"]}]
+    assert gate.slipped_criteria(["a", "ab", "abc"], crit) == {"AC1"}
+    assert gate.slipped_criteria(["a", "c", "abc"], crit) == {"AC1", "AC3"}
+    assert gate.slipped_criteria(["ab"], crit) == {"AC1", "AC2"}  # only a shared key failed: either rule could be the one
+    assert gate.slipped_criteria(["not-in-any-criterion"], crit) == set() == gate.slipped_criteria([], crit)

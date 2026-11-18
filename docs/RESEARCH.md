@@ -99,6 +99,9 @@ can touch the grade.
 - The `difficulty` stage counts a cold pass only if it survives replay. Passes that do not
   are listed as `unreproduced`.
 - The contract now makes `tests/test.sh` write reward 0 first and record `agent.patch`.
+- `rsi calibrate` runs the red team on a task once its pass rate is in the band, before it
+  joins the pool. Until now the loop never ran this stage; only a full `rsi gate` did. A
+  pass without the feature sends the task back to have its tests strengthened.
 
 **Left out.** Replay re-runs the verifier, it does not prove the tests are right. A patch
 that special-cases what the tests check survives replay; the three red-team prompts and the
@@ -107,7 +110,8 @@ exploits. Files git ignores are not in the patch, so a solution that depends on 
 replay by design.
 
 **Status.** Built. `tests/test_redteam.py` fakes Harbor and the judge and checks every
-outcome. Not yet run under Harbor.
+outcome; `tests/test_pipeline.py` runs a whole calibration through every real stage with only
+Harbor and the models faked. Not yet run under Harbor.
 
 ## 4. Feasibility: the hint gap
 

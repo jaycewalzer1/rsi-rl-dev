@@ -183,7 +183,11 @@ def replay(task_dir: Path, trial: harbor.Trial) -> float | None:
         return 0.0  # nothing changed in the repo: the pass did not come from code
     with tempfile.TemporaryDirectory(prefix="rsi-replay-") as tmp:
         rt = replay_task(task_dir, patch, Path(tmp), trial.name[-24:])
-        again = harbor.run_job(rt, "oracle", jobs_dir=_jobs(task_dir), job_name=f"gate-replay-{trial.name}"[:80])[0]
+        try:
+            again = harbor.run_job(rt, "oracle", jobs_dir=_jobs(task_dir), job_name=f"gate-replay-{trial.name}"[:80])[0]
+        except RuntimeError as e:  # Harbor produced nothing: an infrastructure error is not a verdict
+            print(f"replay: {trial.name}: {e}")
+            return None
     return None if again.reward is None or again.exception else float(again.reward)
 
 
@@ -307,6 +311,23 @@ def band_verdict(solved: int, graded: int) -> str:
     return "need_more"
 
 
+def slipped_criteria(failed: list[str], criteria: list[dict]) -> set[str]:
+    """Which criteria an attempt slipped on, from its failing tests.
+
+    A test can belong to several criteria (in a task family one answer key can be changed by
+    two rules). A criterion is slipped when a failing test belongs to it alone. A failing test
+    shared between criteria counts against all of them only when none of its owners is already
+    slipped on its own evidence: forgetting one rule fails the keys it shares with another rule
+    too, and that must not be booked as two slips."""
+    owners: dict[str, set[str]] = {}
+    for c in criteria:
+        for t in c.get("tests", []):
+            owners.setdefault(t, set()).add(c["id"])
+    sure = {next(iter(owners[t])) for t in failed if len(owners.get(t, ())) == 1}
+    shared = [owners[t] for t in failed if len(owners.get(t, ())) > 1 and not owners[t] & sure]
+    return sure.union(*shared)
+
+
 def _tally(task_dir: Path, trials: list[harbor.Trial]) -> dict:
     """Counts for one batch of attempts. Errored trials are void; a pass counts only if the
     recorded patch passes again on its own (see replay)."""
@@ -316,7 +337,8 @@ def _tally(task_dir: Path, trials: list[harbor.Trial]) -> dict:
     return {"attempts": len(trials), "graded": len(graded), "voided": len(trials) - len(graded), "solved": solved,
             "rate": round(solved / len(graded), 3) if graded else None, "unreproduced": unreproduced,
             "failed_tests": {t.name: harbor.failed_tests(t) for t in graded if not t.solved},
-            "failure_messages": {t.name: harbor.failure_messages(t) for t in graded if not t.solved}}
+            # how each failing test failed; capped, a task can have hundreds of failing cases
+            "failure_messages": {t.name: dict(list(harbor.failure_messages(t).items())[:60]) for t in graded if not t.solved}}
 
 
 def stage_difficulty(task_dir: Path, attempts: int | None = None, round_no: int = 0) -> dict:
@@ -471,6 +493,16 @@ def divergent_tests(failed_tests: dict[str, list[str]], messages: dict[str, dict
     return out
 
 
+def representatives(failed: tuple[str, ...], criteria: list[dict], per_criterion: int = 4, unmapped: int = 10) -> tuple[str, ...]:
+    """A few failing tests per criterion. All tests of one criterion enforce one ticket sentence,
+    so the judge does not need hundreds of them to say whether that sentence is there."""
+    owner = {t: c["id"] for c in criteria for t in c.get("tests", [])}
+    groups: dict[str, list[str]] = {}
+    for t in failed:
+        groups.setdefault(owner.get(t, ""), []).append(t)
+    return tuple(t for cid, tests in groups.items() for t in tests[: per_criterion if cid else unmapped])
+
+
 def stage_inspect(task_dir: Path) -> dict:
     """Fairness. The judge must tie every failing test to a ticket sentence, and the quote is
     checked against the ticket mechanically. Each distinct set of failing tests gets
@@ -491,7 +523,8 @@ def stage_inspect(task_dir: Path) -> dict:
         suspects.update({t: "every hinted attempt failed it too" for t in h.get("always_failed", [])})
 
     votes: dict[str, int] = {}
-    sets = sorted({tuple(sorted(f)) for f in failed_tests.values() if f})
+    parsed = json.loads(criteria)
+    sets = sorted({representatives(tuple(sorted(f)), parsed) for f in failed_tests.values() if f})
     for failed in sets:
         flagged = {t: why for t, why in suspects.items() if t in failed}
         measured = ("\nMeasured, and usually the sign of a requirement the ticket never states. Look twice before calling these fair:\n"
