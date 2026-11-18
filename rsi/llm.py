@@ -14,7 +14,6 @@ import subprocess
 import time
 from pathlib import Path
 
-import httpx
 
 LOG = Path(os.environ.get("RSI_LLM_LOG", "runs/llm_calls.jsonl"))
 
@@ -71,6 +70,8 @@ def _ask_cli(prompt, model, tools, cwd, timeout) -> str:
 
 
 def _ask_api(prompt, model, timeout) -> str:
+    import httpx  # only the api backend needs it
+
     r = httpx.post(
         "https://api.anthropic.com/v1/messages",
         headers={

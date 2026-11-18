@@ -1,0 +1,11 @@
+sku,name,category,price_cents,final_sale,legacy_code
+SKU-RUN-01,Trail runner,running,14000,false,
+SKU-RUN-02,Road racer,running,18000,false,
+SKU-BOOT-01,Rain boot,boots,9500,false,
+SKU-BOOT-02,Hiking boot,boots,21000,false,
+SKU-SAND-01,Slide,sandals,3500,true,
+SKU-SAND-02,Strap sandal,sandals,6000,false,
+SKU-DRESS-01,Oxford,dress,16500,true,
+SKU-KIDS-01,Kids sneaker,kids,5500,false,
+SKU-SOCK-01,Wool socks 3-pack,accessories,2400,true,L544
+SKU-LACE-01,Laces,accessories,600,false,

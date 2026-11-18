@@ -1,0 +1,41 @@
+ticket_id,order_id,customer_email,body,created_at
+T0000,O50143,redacted-later@mail.example.com,box arrived wet,2026-08-26T00:00:00Z
+T0001,O50058,redacted-later@mail.example.com,where is my refund,2026-08-22T00:00:00Z
+T0002,O50084,redacted-later@mail.example.com,box arrived wet,2026-10-26T00:00:00Z
+T0003,O50040,redacted-later@mail.example.com,charged twice?,2026-09-13T00:00:00Z
+T0004,O50123,redacted-later@mail.example.com,charged twice?,2026-10-28T00:00:00Z
+T0005,O50174,redacted-later@mail.example.com,charged twice?,2026-08-25T00:00:00Z
+T0006,O50156,redacted-later@mail.example.com,box arrived wet,2026-09-04T00:00:00Z
+T0007,O50203,redacted-later@mail.example.com,box arrived wet,2026-10-29T00:00:00Z
+T0008,O50152,redacted-later@mail.example.com,where is my refund,2026-09-14T00:00:00Z
+T0009,O50165,redacted-later@mail.example.com,box arrived wet,2026-09-24T00:00:00Z
+T0010,O50139,redacted-later@mail.example.com,where is my refund,2026-09-18T00:00:00Z
+T0011,O50022,redacted-later@mail.example.com,where is my refund,2026-10-07T00:00:00Z
+T0012,O50179,redacted-later@mail.example.com,size swap please,2026-10-14T00:00:00Z
+T0013,O50173,redacted-later@mail.example.com,box arrived wet,2026-09-20T00:00:00Z
+T0014,O50084,redacted-later@mail.example.com,box arrived wet,2026-09-11T00:00:00Z
+T0015,O50056,redacted-later@mail.example.com,size swap please,2026-08-23T00:00:00Z
+T0016,O50123,redacted-later@mail.example.com,box arrived wet,2026-10-24T00:00:00Z
+T0017,O50151,redacted-later@mail.example.com,charged twice?,2026-09-06T00:00:00Z
+T0018,O50214,redacted-later@mail.example.com,charged twice?,2026-09-10T00:00:00Z
+T0019,O50021,redacted-later@mail.example.com,box arrived wet,2026-08-31T00:00:00Z
+T0020,O50009,redacted-later@mail.example.com,box arrived wet,2026-09-07T00:00:00Z
+T0021,O50013,redacted-later@mail.example.com,where is my refund,2026-09-12T00:00:00Z
+T0022,O50065,redacted-later@mail.example.com,box arrived wet,2026-09-26T00:00:00Z
+T0023,O50055,redacted-later@mail.example.com,size swap please,2026-10-11T00:00:00Z
+T0024,O50079,redacted-later@mail.example.com,box arrived wet,2026-09-29T00:00:00Z
+T0025,O50089,redacted-later@mail.example.com,size swap please,2026-10-16T00:00:00Z
+T0026,O50084,redacted-later@mail.example.com,charged twice?,2026-10-10T00:00:00Z
+T0027,O50092,redacted-later@mail.example.com,size swap please,2026-09-27T00:00:00Z
+T0028,O50197,redacted-later@mail.example.com,size swap please,2026-10-29T00:00:00Z
+T0029,O50165,redacted-later@mail.example.com,size swap please,2026-10-10T00:00:00Z
+T0030,O50189,redacted-later@mail.example.com,where is my refund,2026-10-26T00:00:00Z
+T0031,O50168,redacted-later@mail.example.com,charged twice?,2026-09-01T00:00:00Z
+T0032,O50060,redacted-later@mail.example.com,box arrived wet,2026-09-01T00:00:00Z
+T0033,O50077,redacted-later@mail.example.com,box arrived wet,2026-09-30T00:00:00Z
+T0034,O50208,redacted-later@mail.example.com,where is my refund,2026-10-27T00:00:00Z
+T0035,O50050,redacted-later@mail.example.com,where is my refund,2026-09-12T00:00:00Z
+T0036,O50215,redacted-later@mail.example.com,box arrived wet,2026-09-29T00:00:00Z
+T0037,O50028,redacted-later@mail.example.com,size swap please,2026-09-24T00:00:00Z
+T0038,O50063,redacted-later@mail.example.com,box arrived wet,2026-10-03T00:00:00Z
+T0039,O50175,redacted-later@mail.example.com,size swap please,2026-10-17T00:00:00Z

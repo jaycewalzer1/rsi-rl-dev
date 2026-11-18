@@ -1,0 +1,7 @@
+store_id,name,timezone,region,currency
+S01,Portland Pearl,America/Los_Angeles,west,USD
+S02,Brooklyn Navy Yard,America/New_York,east,USD
+S03,Shoreditch,Europe/London,intl,USD
+S04,Shibuya,Asia/Tokyo,intl,USD
+S05,Honolulu Kakaako,Pacific/Honolulu,west,USD
+TEST,QA sandbox,UTC,test,USD

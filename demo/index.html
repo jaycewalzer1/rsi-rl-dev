@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Task foundry</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #EEF1F3; --panel: #F8FAFB; --ink: #17202B; --ink-2: #4A5562; --muted: #6E7884; --line: #CDD4DA;
+  --before: #2F6FB0; --after: #C4561A; --fail: #B3261E; --ok: #2E7D4F;
+  --heat-1: #F6D9C4; --heat-2: #EFB58C; --heat-3: #E39058; --heat-4: #D46E2E; --heat-5: #B5531A; --heat-6: #8E3D12; --heat-7: #6A2B0C; --heat-8: #4A1C06;
+  --band: rgba(196, 86, 26, .12);
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #151B22; --panel: #1C232C; --ink: #E7ECF1; --ink-2: #B3BDC8; --muted: #8893A0; --line: #2E3843;
+  --before: #3F8AD6; --after: #D96A2E; --fail: #E5675E; --ok: #5DBB83;
+  --heat-1: #5A2A10; --heat-2: #7A3814; --heat-3: #9C4818; --heat-4: #C05A1E; --heat-5: #D9732F; --heat-6: #E89350; --heat-7: #F2B47D; --heat-8: #F8D5B4;
+  --band: rgba(217, 106, 46, .16);
+} }
+:root[data-theme="dark"] {
+  --bg: #151B22; --panel: #1C232C; --ink: #E7ECF1; --ink-2: #B3BDC8; --muted: #8893A0; --line: #2E3843;
+  --before: #3F8AD6; --after: #D96A2E; --fail: #E5675E; --ok: #5DBB83;
+  --heat-1: #5A2A10; --heat-2: #7A3814; --heat-3: #9C4818; --heat-4: #C05A1E; --heat-5: #D9732F; --heat-6: #E89350; --heat-7: #F2B47D; --heat-8: #F8D5B4;
+  --band: rgba(217, 106, 46, .16);
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 400 15px/1.5 "Archivo", system-ui, sans-serif; font-variation-settings: "wdth" 100; }
+a { color: inherit; }
+code, .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12.5px; }
+.wrap { max-width: 1320px; margin: 0 auto; padding: 28px 24px 64px; }
+header { display: grid; grid-template-columns: 1fr auto; gap: 16px 32px; align-items: end; margin-bottom: 28px; }
+h1 { margin: 0; font-weight: 800; font-size: clamp(40px, 6vw, 76px); line-height: .92; letter-spacing: -.02em; font-variation-settings: "wdth" 62; }
+.lede { margin: 10px 0 0; max-width: 66ch; color: var(--ink-2); }
+.controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+button { font: inherit; font-weight: 600; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 7px 12px; cursor: pointer; }
+button[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--after); outline-offset: 2px; }
+input[type=range] { width: 200px; accent-color: var(--after); }
+select { font: inherit; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+.status { color: var(--muted); font-size: 13px; min-width: 12ch; text-align: right; }
+h2 { font-weight: 700; font-size: 22px; margin: 0 0 4px; font-variation-settings: "wdth" 80; }
+.sub { color: var(--muted); font-size: 13.5px; margin: 0 0 14px; max-width: 70ch; }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 20px; }
+.grid { display: grid; gap: 18px; }
+.g2 { grid-template-columns: 1.35fr 1fr; }
+@media (max-width: 900px) { .g2 { grid-template-columns: 1fr; } header { grid-template-columns: 1fr; } .controls { justify-content: flex-start; } }
+
+/* swarm floor */
+.floor { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); border-top: 1px solid var(--line); }
+.stage { padding: 12px 10px 14px; border-right: 1px solid var(--line); min-height: 150px; position: relative; }
+.stage:last-child { border-right: 0; }
+.stage .name { font-weight: 700; font-size: 15px; font-variation-settings: "wdth" 75; }
+.stage .what { color: var(--muted); font-size: 12px; line-height: 1.35; min-height: 32px; }
+.stage .count { font-weight: 800; font-size: 30px; font-variation-settings: "wdth" 62; line-height: 1; margin-top: 8px; }
+.stage .count small { font-size: 12px; font-weight: 500; color: var(--muted); font-variation-settings: "wdth" 100; }
+.stage.active { background: var(--band); }
+.stage.active .name::after { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--after); margin-left: 7px; vertical-align: middle; animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) { .stage.active .name::after { animation: none; } }
+.agents { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 10px; }
+.agent { width: 10px; height: 10px; border-radius: 2px; border: 1.5px solid var(--ink-2); background: transparent; }
+.agent.done { background: var(--ink); border-color: var(--ink); }
+.agent.fail { background: var(--fail); border-color: var(--fail); }
+.stage .note { overflow-wrap: anywhere; margin-top: 8px; font-size: 12px; color: var(--ink-2); line-height: 1.35; }
+
+/* furnace */
+.ladder { display: grid; gap: 6px; margin-top: 6px; }
+.rung { display: grid; grid-template-columns: 74px 1fr 64px; gap: 10px; align-items: center; }
+.rung .lv { font-weight: 700; font-variation-settings: "wdth" 70; font-size: 15px; }
+.rung .lv small { display: block; font-weight: 400; color: var(--muted); font-size: 11.5px; font-variation-settings: "wdth" 100; }
+.track { position: relative; height: 26px; background: var(--bg); border-radius: 4px; overflow: hidden; }
+.fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 0 4px 4px 0; transition: width .5s ease; }
+.target { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--ink); }
+.bandzone { position: absolute; top: 0; bottom: 0; background: var(--band); }
+.rung .val { font-weight: 700; text-align: right; font-variation-settings: "wdth" 80; }
+.rung.pending .val { color: var(--muted); font-weight: 400; }
+.rung.landed .lv { color: var(--after); }
+.axis { display: grid; grid-template-columns: 74px 1fr 64px; gap: 10px; font-size: 11.5px; color: var(--muted); margin-top: 4px; }
+.axis div:nth-child(2) { display: flex; justify-content: space-between; }
+.dropped { font-size: 12.5px; color: var(--ink-2); margin-top: 14px; }
+
+/* feed */
+.feed { height: 430px; overflow: auto; display: flex; flex-direction: column-reverse; gap: 0; border-top: 1px solid var(--line); }
+.ev { display: grid; grid-template-columns: 84px 1fr; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.ev .who { color: var(--muted); font-size: 12px; }
+.ev.fail .msg { color: var(--fail); }
+.ev .msg a { text-decoration-color: var(--line); }
+
+/* dumbbell */
+.dumb svg { width: 100%; height: auto; display: block; }
+.legend { display: flex; gap: 16px; font-size: 13px; color: var(--ink-2); margin-bottom: 8px; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; }
+.tip { position: fixed; pointer-events: none; background: var(--ink); color: var(--bg); font-size: 12.5px; padding: 6px 9px; border-radius: 6px; opacity: 0; transition: opacity .1s; z-index: 5; max-width: 260px; }
+.headline { display: flex; gap: 28px; flex-wrap: wrap; margin: 4px 0 16px; }
+.headline div { font-size: 13px; color: var(--muted); }
+.headline b { display: block; font-size: 40px; line-height: 1; color: var(--ink); font-weight: 800; font-variation-settings: "wdth" 62; }
+
+/* evidence + gate */
+.evid { list-style: none; margin: 0; padding: 0; max-height: 360px; overflow: auto; }
+.evid li { padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 13.5px; }
+.evid .src { color: var(--muted); font-size: 12px; }
+table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); }
+th { font-weight: 600; color: var(--ink-2); }
+.pass { color: var(--ok); font-weight: 700; }
+.failt { color: var(--fail); font-weight: 700; }
+.empty { color: var(--muted); font-size: 13.5px; padding: 14px 0; }
+footer { margin-top: 26px; color: var(--muted); font-size: 12.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Task foundry</h1>
+      <p class="lede">Agents read a business data export, gather developer complaints and papers on how coding agents fail, and stack those failures into tasks over the data. Each task starts at a level no model can pass and comes down one rule at a time until the pass rate reaches about 25%. Then Qwen is trained on the tasks and benchmarked again.</p>
+    </div>
+    <div class="controls">
+      <button id="live" aria-pressed="false">Live</button>
+      <button id="play" aria-pressed="false">Replay</button>
+      <select id="speed" aria-label="Replay speed"><option value="6">Slow</option><option value="20" selected>Normal</option><option value="80">Fast</option></select>
+      <input id="scrub" type="range" min="0" max="0" value="0" aria-label="Position in the run">
+      <span class="status" id="status"></span>
+    </div>
+  </header>
+
+  <section style="margin-bottom:18px">
+    <h2>The swarm</h2>
+    <p class="sub" id="models">Each square is one agent: outlined while it works, filled when done, red if it failed.</p>
+    <div class="floor" id="floor"></div>
+  </section>
+
+  <div class="grid g2" style="margin-bottom:18px">
+    <section>
+      <h2>Annealing</h2>
+      <p class="sub">Level 8 stacks every rule; each step down removes one. Each rung names the rule that came off. Bars show Qwen's pass rate on that rung's task, sampled at temperature 0.7. The shaded zone is the 15 to 35% band; the line is the 25% target.</p>
+      <div class="ladder" id="ladder"></div>
+      <div class="axis"><div></div><div><span>0%</span><span>25%</span><span>50%</span><span>75%</span><span>100%</span></div><div></div></div>
+      <p class="dropped" id="dropped"></p>
+    </section>
+    <section>
+      <h2>What the agents are doing</h2>
+      <p class="sub">Newest at the top.</p>
+      <div class="feed" id="feed"></div>
+    </section>
+  </div>
+
+  <div class="grid g2" style="margin-bottom:18px">
+    <section class="dumb">
+      <h2>Qwen, before and after training</h2>
+      <p class="sub" id="qsub">Held-out rule combinations the model never trained on, greedy decoding, all-or-nothing grading on the real data and two twin datasets.</p>
+      <div class="headline" id="headline"></div>
+      <div class="legend"><span><i style="background:var(--before)"></i>Before</span><span><i style="background:var(--after)"></i>After</span></div>
+      <div id="dumb"></div>
+    </section>
+    <section>
+      <h2>Evidence</h2>
+      <p class="sub">Complaints the scouts kept and the papers that back them.</p>
+      <ul class="evid" id="evid"></ul>
+    </section>
+  </div>
+
+  <section>
+    <h2>Your pipeline: rsi gate</h2>
+    <p class="sub">Exported Harbor tasks run through shape, oracle, nop and mutation checks. A mutation is the reference solution with one rule forgotten; it must fail.</p>
+    <div id="gate"></div>
+  </section>
+  <footer id="foot"></footer>
+</div>
+<div class="tip" id="tip"></div>
+
+<script>
+window.__STATE__ = null;
+const STAGES = [
+  ["intake", "Intake", "load the export"],
+  ["prune", "Prune", "PII, test rows, dupes, orphans"],
+  ["scan", "Scan", "HN and X scouts, labellers"],
+  ["papers", "Papers", "arXiv and Semantic Scholar readers"],
+  ["crossref", "Cross-reference", "rules to evidence"],
+  ["design", "Design", "impossible task and ladder"],
+  ["export", "Export", "Harbor tasks"],
+  ["gate", "Gate", "rsi gate"],
+  ["qwen", "Qwen", "bench, anneal, train, bench"],
+];
+const QWEN = new Set(["bench_before", "anneal", "collect", "train", "bench_after", "qwen", "smoke"]);
+const $ = id => document.getElementById(id);
+let all = [], cursor = 0, timer = null, liveTimer = null;
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const pct = v => Math.round(v * 100) + "%";
+const stageOf = e => QWEN.has(e.stage) ? "qwen" : e.stage;
+
+function render() {
+  const evs = all.slice(0, cursor);
+  $("scrub").max = all.length; $("scrub").value = cursor;
+  $("status").textContent = `${cursor} of ${all.length} events`;
+
+  // swarm floor
+  const st = {};
+  for (const [k] of STAGES) st[k] = { agents: new Map(), work: 0, started: false, ended: false, note: "" };
+  let lastStage = null;
+  for (const e of evs) {
+    const s = st[stageOf(e)]; if (!s) continue;
+    lastStage = stageOf(e);
+    if (e.kind === "stage_start") { s.started = true; s.note = e.msg; }
+    if (e.kind === "stage_end") { s.ended = true; s.note = e.msg; }
+    if (e.kind === "spawn") s.agents.set(e.agent, "work");
+    if ((e.kind === "done" || e.kind === "fail") && e.agent) s.agents.set(e.agent, e.kind);
+    if (e.kind === "work" || e.kind === "artifact") { s.work++; if (e.role === "qwen") s.agents.set(e.agent, e.solved ? "done" : "work-x"); }
+  }
+  const qEnded = evs.some(e => e.stage === "qwen" && e.kind === "stage_end");
+  $("floor").innerHTML = STAGES.map(([k, name, what]) => {
+    const s = st[k];
+    const active = k === lastStage && !(k === "qwen" ? qEnded : s.ended) && cursor < all.length + 1;
+    let agents = [...s.agents.entries()];
+    let shown = agents.slice(-60);
+    const sq = shown.map(([a, v]) => `<span class="agent ${v === "done" ? "done" : v === "fail" ? "fail" : ""}" title="${esc(a)}"></span>`).join("");
+    const n = k === "qwen" ? agents.length : agents.length || s.work;
+    const unit = k === "qwen" ? "answers" : agents.length ? "agents" : "steps";
+    return `<div class="stage ${active ? "active" : ""}"><div class="name">${name}</div><div class="what">${what}</div>
+      <div class="count">${n || "–"} <small>${n ? unit : ""}</small></div><div class="agents">${sq}</div>
+      <div class="note">${esc(s.note).slice(0, 110)}</div></div>`;
+  }).join("");
+
+  // models line
+  const run = evs.find(e => e.stage === "run" && e.models);
+  if (run) $("models").textContent = `Each square is one agent: outlined while it works, filled when done, red if it failed. Judge ${run.models.judge}, author ${run.models.author}; trained model Qwen3-VL-8B-Instruct, 4-bit MLX.`;
+
+  // ladder
+  const design = evs.filter(e => e.stage === "design" && e.kind === "work");
+  const anneal = new Map(evs.filter(e => e.stage === "anneal" && e.kind === "metric").map(e => [e.level, e.value]));
+  const landed = evs.find(e => e.stage === "anneal" && e.kind === "stage_end");
+  $("ladder").innerHTML = [8,7,6,5,4,3,2,1].map(l => {
+    const v = anneal.get(l);
+    const d = design.find(e => e.level === l);
+    const rule = d ? (l === 8 ? "all rules" : d.msg.replace(/^level \d+: /, "")) : "";
+    return `<div class="rung ${v === undefined ? "pending" : ""} ${landed && landed.level === l ? "landed" : ""}">
+      <div class="lv">Level ${l}<small>${esc(rule)}</small></div>
+      <div class="track"><div class="bandzone" style="left:15%;width:20%"></div>
+        <div class="fill" style="width:${v === undefined ? 0 : Math.max(v * 100, v > 0 ? 1.5 : 0)}%;background:var(--heat-${l})"></div>
+        <div class="target" style="left:25%"></div></div>
+      <div class="val">${v === undefined ? "not run" : pct(v)}</div></div>`;
+  }).join("");
+  $("dropped").textContent = landed ? `Landed at level ${landed.level}: the first level, coming down from 8, where Qwen's pass rate reached the band. Training samples come from this level and the two above it.` :
+    anneal.size ? "Coming down one rule at a time." : "The anneal starts when the Qwen job gets its turn on the GPU queue.";
+
+  // feed
+  const feedEvs = evs.filter(e => ["work", "artifact", "fail", "done", "stage_start", "stage_end"].includes(e.kind)).slice(-160);
+  $("feed").innerHTML = feedEvs.reverse().map(e => {
+    const msg = e.url ? `<a href="${esc(e.url)}" target="_blank" rel="noopener">${esc(e.msg)}</a>` : esc(e.msg);
+    return `<div class="ev ${e.kind === "fail" ? "fail" : ""}"><div class="who">${esc(e.agent || e.stage)}</div><div class="msg">${msg}</div></div>`;
+  }).join("");
+
+  // dumbbell
+  const before = evs.find(e => e.kind === "metric" && e.name === "bench_before");
+  const after = evs.find(e => e.kind === "metric" && e.name === "bench_after");
+  $("headline").innerHTML = (before ? `<div><b>${pct(before.value)}</b>before</div>` : "") + (after ? `<div><b>${pct(after.value)}</b>after</div>` : "");
+  $("dumb").innerHTML = before ? dumbbell(before.by_level, after && after.by_level) : `<p class="empty">The benchmark runs first in the Qwen job. Nothing has been measured yet.</p>`;
+
+  // evidence
+  const ev = evs.filter(e => e.kind === "artifact" && (e.stage === "scan" || e.stage === "papers")).slice(-80).reverse();
+  $("evid").innerHTML = ev.length ? ev.map(e => `<li><a href="${esc(e.url)}" target="_blank" rel="noopener">${esc(e.msg)}</a><div class="src">${e.stage === "scan" ? (e.role === "hn" ? "Hacker News" : "X") + (e.category ? ", " + esc(e.category) : "") : "paper, " + (e.role === "seed" ? "seed mode" : "found in this run")}</div></li>`).join("") : `<li class="empty">Scouts haven't reported yet.</li>`;
+
+  // gate
+  const g = evs.filter(e => e.stage === "gate" && e.gate_stage);
+  const tasks = {};
+  for (const e of g) { const t = e.msg.split(" ")[0]; (tasks[t] = tasks[t] || {})[e.gate_stage] = e; }
+  const cols = ["shape", "oracle", "nop", "mutations"];
+  $("gate").innerHTML = Object.keys(tasks).length ? `<table><thead><tr><th>Task</th>${cols.map(c => `<th>${c}</th>`).join("")}</tr></thead><tbody>${
+    Object.entries(tasks).map(([t, r]) => `<tr><td class="mono">${esc(t)}</td>${cols.map(c => r[c] ? `<td class="${r[c].ok ? "pass" : "failt"}" title="${esc(r[c].msg)}">${r[c].ok ? "Pass" : "Fail"}</td>` : `<td class="empty">–</td>`).join("")}</tr>`).join("")
+  }</tbody></table>` : `<p class="empty">The gate runs after export.</p>`;
+
+  const t0 = all[0] && all[0].t, tn = evs.length && evs[evs.length - 1].t;
+  $("foot").textContent = t0 ? `Run ${window.__RUN__ || ""}, ${new Date(t0 * 1000).toLocaleString()}; ${Math.round((tn - t0) / 60)} minutes of the run shown.` : "";
+}
+
+function dumbbell(b, a) {
+  const levels = Object.keys(b).map(Number).sort((x, y) => y - x);
+  const W = 560, rowH = 30, top = 8, left = 74, right = 54, H = top + levels.length * rowH + 26;
+  const x = v => left + v * (W - left - right);
+  let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Pass rate by level, before and after training">`;
+  for (const t of [0, .25, .5, .75, 1]) s += `<line x1="${x(t)}" x2="${x(t)}" y1="${top}" y2="${H - 22}" stroke="var(--line)" stroke-width="1"/><text x="${x(t)}" y="${H - 6}" text-anchor="middle" font-size="11" fill="var(--muted)">${pct(t)}</text>`;
+  levels.forEach((l, i) => {
+    const y = top + i * rowH + rowH / 2, vb = b[l].rate, va = a && a[l] ? a[l].rate : null;
+    s += `<text x="0" y="${y + 4}" font-size="13" font-weight="600" fill="var(--ink)">Level ${l}</text>`;
+    if (va !== null) s += `<line x1="${x(vb)}" x2="${x(va)}" y1="${y}" y2="${y}" stroke="var(--ink-2)" stroke-width="2"/>`;
+    s += `<circle cx="${x(vb)}" cy="${y}" r="6" fill="var(--before)" stroke="var(--panel)" stroke-width="2" data-tip="Level ${l} before: ${b[l].solved} of ${b[l].n} solved"/>`;
+    if (va !== null) s += `<circle cx="${x(va)}" cy="${y}" r="6" fill="var(--after)" stroke="var(--panel)" stroke-width="2" data-tip="Level ${l} after: ${a[l].solved} of ${a[l].n} solved"/>`;
+    s += `<text x="${W - 2}" y="${y + 4}" text-anchor="end" font-size="12" fill="var(--ink-2)">${b[l].solved}/${b[l].n}${va !== null ? " → " + a[l].solved + "/" + a[l].n : ""}</text>`;
+  });
+  return s + "</svg>";
+}
+
+document.addEventListener("mousemove", e => {
+  const t = e.target.closest && e.target.closest("[data-tip]"), tip = $("tip");
+  if (!t) { tip.style.opacity = 0; return; }
+  tip.textContent = t.dataset.tip; tip.style.opacity = 1;
+  tip.style.left = Math.min(e.clientX + 12, innerWidth - 270) + "px"; tip.style.top = e.clientY + 14 + "px";
+});
+
+function stopReplay() { clearInterval(timer); timer = null; $("play").setAttribute("aria-pressed", "false"); $("play").textContent = "Replay"; }
+$("play").onclick = () => {
+  if (timer) return stopReplay();
+  setLive(false);
+  if (cursor >= all.length) cursor = 0;
+  $("play").setAttribute("aria-pressed", "true"); $("play").textContent = "Pause";
+  timer = setInterval(() => { cursor = Math.min(all.length, cursor + 1); render(); if (cursor >= all.length) stopReplay(); }, 1000 / +$("speed").value);
+};
+$("speed").onchange = () => { if (timer) { stopReplay(); $("play").click(); } };
+$("scrub").oninput = e => { stopReplay(); setLive(false); cursor = +e.target.value; render(); };
+
+async function poll() {
+  try {
+    const s = await (await fetch("/api/state", { cache: "no-store" })).json();
+    window.__RUN__ = s.run; const follow = cursor >= all.length; all = s.events; if (follow) cursor = all.length; render();
+  } catch (e) { $("status").textContent = "Lost the server; showing what loaded."; }
+}
+function setLive(on) {
+  clearInterval(liveTimer); liveTimer = null;
+  $("live").setAttribute("aria-pressed", String(on));
+  if (on) { stopReplay(); cursor = all.length; poll(); liveTimer = setInterval(poll, 2000); }
+}
+$("live").onclick = () => setLive(!liveTimer);
+
+if (window.__STATE__) {
+  window.__RUN__ = window.__STATE__.run; all = window.__STATE__.events; cursor = all.length;
+  $("live").hidden = true; render();
+} else { setLive(true); }
+</script>
+</body>
+</html>

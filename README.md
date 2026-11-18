@@ -88,6 +88,62 @@ writes `authoring/gate/<stage>.json` stamped with the task checksum.
 | difficulty | K cold attempts per solver model; pass rate in the band with at least one full solve (Wilson interval, errored trials void) |
 | inspect | every failing test of every failed attempt maps to a ticket sentence quoted word for word |
 
+## The swarm, the business data and the Qwen leg
+
+`rsi swarm` runs the factory as a swarm of agents over a company's data export and logs
+every agent to `runs/<run>/events.jsonl`; `rsi demo` shows it live or as a replay.
+
+```
+ business export (CSV) ──► intake: loader + pruner + steward agent per table
+                            PII columns, test rows, exact dupes, sparse/constant columns,
+                            orphans, enum noise dropped; resent events kept (they are data)
+ HN (Algolia) + X ───────► scouts (one per query) ──► labellers ──► complaints.jsonl
+ arXiv + Semantic Scholar ► one reader per complaint category ──► failure_modes.json
+                         ──► crossref: mapper agents tie each task rule to complaints + papers
+                         ──► design: the impossible task (all 8 rules) and the ladder down,
+                             weakest-slipping rule off first (Beta prior from history)
+                         ──► export: ladder steps as Harbor tasks ──► rsi gate (your pipeline)
+                         ──► qwen: benchmark, anneal down the ladder, post-train, benchmark
+```
+
+**Tasks from the business data** (`rsi/bizops.py`). One function, refunds owed per order,
+with up to eight stacked rules, each one a sourced failure mode: in-store returns stamped
+in local time (sibling path), the 30-day window in store-local calendar days (time zones),
+final-sale exceptions (existing rule carried), resent webhook events (idempotency),
+quantity caps in request order (state across steps), net-of-discount refunds (derived
+value), exchanges that refund nothing but use up quantity, and one store only (tenancy).
+Rules a task leaves out are replaced by an explicit default sentence, so the ticket always
+says exactly what to compute. Oracles are exact; grading is all-or-nothing over the real
+pruned data plus two twin datasets. Exported tasks follow `docs/TASK_CONTRACT.md`: one
+mutation per rule (the reference with that rule forgotten), hidden tests mapped to the
+rule whose mutation they catch.
+
+The sample data in `examples/business/shoe-store/raw` is **synthetic** (`rsi/business_gen.py`,
+seed 7): a messy shoe-store export. Point `--business` at any folder of CSVs; the bizops
+rules are written for this schema, the intake is not.
+
+**The Qwen leg** (`rsi/qwen.py`) runs local Qwen3-VL-8B-Instruct (4-bit MLX, from the
+kokopelli repo) through kokopelli's GPU queue:
+
+1. benchmark before: held-out rule combinations at every level 8..1, greedy, all-or-nothing
+2. anneal: start at level 8 and walk the swarm's ladder down until the sampled pass rate
+   reaches the band (15 to 35%, target 25%)
+3. collect: rejection sampling on training combinations at and above that level, keep only
+   answers the oracle grades fully right
+4. train: LoRA (r16 on q/k/v/o) with mlx-vlm's SFT trainer, loss on the answer only
+5. benchmark after: the same held-out set with the adapter
+
+Benchmark combinations are never trained on (`bizops.split_combos`), so "after" measures
+transfer to rule stacks the model never saw graded. `runs/<run>/qwen/REPORT.md` names model,
+weights and adapter.
+
+```bash
+uv run rsi swarm --run r1 --gate shape,oracle,nop,mutations     # needs claude (judge) + docker (gate)
+uv run rsi qwen  --run r1                                       # queues the Qwen job
+uv run rsi demo  --run r1                                       # http://127.0.0.1:8791
+uv run rsi demo  --run r1 --export r1.html                      # self-contained replay
+```
+
 ## Configuration
 
 All settings are environment variables (see `rsi/config.py`):

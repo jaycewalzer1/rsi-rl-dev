@@ -10,6 +10,7 @@ the pipeline has a pool even on a quiet day.
 
 from __future__ import annotations
 
+import threading
 import time
 import xml.etree.ElementTree as ET
 from collections import defaultdict
@@ -22,10 +23,16 @@ from .config import CONFIG
 from .store import read_json, read_jsonl, write_json
 
 ATOM = "{http://www.w3.org/2005/Atom}"
+_ARXIV = threading.Lock()  # parallel readers share arXiv's one-call-per-3-s limit
 SEEDS = Path(__file__).resolve().parent.parent / "seeds" / "failure_modes.json"
 
 
 def search_arxiv(query: str, n: int = 8) -> list[dict]:
+    with _ARXIV:
+        return _search_arxiv(query, n)
+
+
+def _search_arxiv(query: str, n: int) -> list[dict]:
     r = httpx.get(
         "https://export.arxiv.org/api/query",
         params={"search_query": f"all:{query}", "max_results": n, "sortBy": "relevance"},
@@ -89,52 +96,56 @@ JSON: {{"mode": "...", "supporting": [<indices of supporting papers>],
 "textbook_build": "...", "hidden_case": "..."}}"""
 
 
-def cross_reference(complaints: list[dict]) -> list[dict]:
-    by_cat: dict[str, list[dict]] = defaultdict(list)
-    for c in complaints:
-        by_cat[c["category"]].append(c)
-
-    modes = []
-    for cat, items in by_cat.items():
-        query = f"LLM coding agent {cat.replace('-', ' ')} failure"
-        papers = search_arxiv(query) + search_s2(query)
-        if not papers:
-            continue
-        verdict = llm.ask_json(
-            JUDGE.format(
-                category=cat,
-                complaints="\n".join(f"- {c['failure']} ({c['url']})" for c in items[:12]),
-                papers="\n".join(
-                    f"[{i}] {p['title']} ({p['year']}): {p['abstract'][:900]}"
-                    for i, p in enumerate(papers)
-                ),
+def read_category(cat: str, items: list[dict]) -> dict | None:
+    """One reader: search papers for a complaint category, keep it only if a paper backs it."""
+    query = f"LLM coding agent {cat.replace('-', ' ')} failure"
+    papers = search_arxiv(query) + search_s2(query)
+    if not papers:
+        return None
+    verdict = llm.ask_json(
+        JUDGE.format(
+            category=cat,
+            complaints="\n".join(f"- {c['failure']} ({c['url']})" for c in items[:12]),
+            papers="\n".join(
+                f"[{i}] {p['title']} ({p['year']}): {p['abstract'][:900]}"
+                for i, p in enumerate(papers)
             ),
-            CONFIG.judge_model,
-        )
-        support = [papers[i] for i in verdict.get("supporting", []) if i < len(papers)]
-        if not support:
-            continue
-        modes.append(
-            {
-                "id": cat,
-                "mode": verdict["mode"],
-                "textbook_build": verdict.get("textbook_build", ""),
-                "hidden_case": verdict.get("hidden_case", ""),
-                "complaints": [{"url": c["url"], "text": c["text"][:400], "provenance": c["provenance"]} for c in items],
-                "papers": [{k: p[k] for k in ("title", "url", "year", "source")} for p in support],
-                "origin": "scan",
-            }
-        )
-    return modes
+        ),
+        CONFIG.judge_model,
+    )
+    support = [papers[i] for i in verdict.get("supporting", []) if i < len(papers)]
+    if not support:
+        return None
+    return {
+        "id": cat,
+        "mode": verdict["mode"],
+        "textbook_build": verdict.get("textbook_build", ""),
+        "hidden_case": verdict.get("hidden_case", ""),
+        "complaints": [{"url": c["url"], "text": c["text"][:400], "provenance": c["provenance"]} for c in items],
+        "papers": [{k: p[k] for k in ("title", "url", "year", "source")} for p in support],
+        "origin": "scan",
+    }
+
+
+def by_category(complaints: list[dict]) -> dict[str, list[dict]]:
+    out: dict[str, list[dict]] = defaultdict(list)
+    for c in complaints:
+        out[c["category"]].append(c)
+    return out
+
+
+def cross_reference(complaints: list[dict]) -> list[dict]:
+    return [m for cat, items in by_category(complaints).items() if (m := read_category(cat, items))]
+
+
+def merge_seeds(modes: list[dict]) -> list[dict]:
+    seen = {m["id"] for m in modes}
+    return modes + [{**s, "origin": "seed"} for s in read_json(SEEDS) if s["id"] not in seen]
 
 
 def run(out_dir: Path) -> Path:
     complaints = read_jsonl(out_dir / "complaints.jsonl")
-    modes = cross_reference(complaints) if complaints else []
-    seen = {m["id"] for m in modes}
-    for seed in read_json(SEEDS):
-        if seed["id"] not in seen:
-            modes.append({**seed, "origin": "seed"})
+    modes = merge_seeds(cross_reference(complaints) if complaints else [])
     path = out_dir / "failure_modes.json"
     write_json(path, modes)
     fresh = sum(m["origin"] == "scan" for m in modes)
