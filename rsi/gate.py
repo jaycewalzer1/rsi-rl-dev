@@ -1,7 +1,9 @@
 """Stage 5: the testing suite. Harbor-native port of the Frist hackathon's ws_check.
 
 Stages, in order, stopping at the first hard failure:
-  shape       files, task.toml, ticket length, criteria <-> tests <-> mutations mapping
+  shape       files, task.toml, ticket length, criteria <-> tests <-> mutations mapping,
+              every criterion's sentence in the ticket word for word
+  audit       static leak and verifier checks (rsi/audit.py): no model, no Docker
   oracle      reference solution scores 1, three runs, same result each time
   nop         untouched base scores 0
   mutations   every authoring/mutations/*.patch on top of the reference scores 0
@@ -24,10 +26,11 @@ import tempfile
 import tomllib
 from pathlib import Path
 
-from . import harbor, llm
+from . import audit, harbor, llm
 from .config import CONFIG
 
-STAGES = ["shape", "oracle", "nop", "mutations", "shortcut", "difficulty", "inspect"]
+STAGES = ["shape", "audit", "oracle", "nop", "mutations", "shortcut", "difficulty", "inspect"]
+PRE_MEASURE = ["shape", "audit", "oracle", "nop", "mutations"]  # must pass before any solver attempt is spent
 MODEL_STAGES = {"shortcut", "difficulty", "inspect"}
 
 
@@ -75,7 +78,10 @@ def stage_shape(task_dir: Path) -> dict:
     criteria = json.loads((task_dir / "authoring" / "criteria.json").read_text())
     mutations = sorted((task_dir / "authoring" / "mutations").glob("*.patch"))
     covered = {m.name.split("-")[1] for m in mutations if "-" in m.name}
+    ticket = " ".join((task_dir / "instruction.md").read_text().split())
     for c in criteria:
+        if c.get("sentence") and " ".join(c["sentence"].split()) not in ticket:
+            problems.append(f"{c['id']} sentence is not in the ticket word for word")
         if not c.get("tests"):
             problems.append(f"{c['id']} has no hidden tests")
         if c["id"] not in covered:
@@ -87,6 +93,15 @@ def stage_shape(task_dir: Path) -> dict:
         task_dir, "shape", not problems,
         {"note": "; ".join(problems) or f"{words} words, {len(criteria)} criteria, {n_tests} tests, {len(mutations)} mutations"},
     )
+
+
+# ---------------------------------------------------------------- audit
+
+def stage_audit(task_dir: Path) -> dict:
+    findings = audit.audit(task_dir)
+    blocks = [f for f in findings if f["severity"] == "block"]
+    note = "; ".join(f"{f['check']}: {f['detail']}" for f in blocks)[:600] or f"clean ({len(findings)} warnings)"
+    return _save(task_dir, "audit", not blocks, {"findings": findings, "note": note})
 
 
 # ---------------------------------------------------------------- oracle / nop
@@ -256,7 +271,7 @@ def stage_inspect(task_dir: Path) -> dict:
 # ---------------------------------------------------------------- driver
 
 RUNNERS = {
-    "shape": stage_shape, "oracle": stage_oracle, "nop": stage_nop,
+    "shape": stage_shape, "audit": stage_audit, "oracle": stage_oracle, "nop": stage_nop,
     "mutations": stage_mutations, "shortcut": stage_shortcut,
     "difficulty": stage_difficulty, "inspect": stage_inspect,
 }

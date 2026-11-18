@@ -49,6 +49,14 @@ directory. The gate (`rsi gate`) relies on every line below.
 - They represent the textbook build for each failure mode, so they double as the proof that
   the hidden cases separate the textbook build from the real one.
 
+## Integrity (checked by `rsi gate --stages audit`, no Docker needed)
+- Nothing under `tests/`, `solution/` or `authoring/` is in the image, in any form. The
+  Dockerfile copies `app/` only.
+- The starting repo does not already contain the reference's lines, and the ticket never
+  names a test, a criterion file or the grader.
+- `tests/test.sh` installs nothing, never pipes the test runner without `set -o pipefail`,
+  never ends the runner with `|| true`, and writes reward 1 only inside the runner's `if`.
+
 ## Fairness
 - Every hidden test maps to one ticket sentence quoted word for word (`criteria.json`).
 - The reference passes every test three times from a clean image.

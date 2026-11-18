@@ -6,7 +6,7 @@
       too_easy          -> revise: add a criterion from a fresh failure mode
       too_hard          -> revise: drop the case family most failed attempts miss
       in_band           -> done
-    after every revision: oracle, nop and mutations again before re-measuring
+    after every revision: shape, audit, oracle, nop and mutations again before re-measuring
 
 Every finished task appends to runs/history.jsonl which modes made solvers slip.
 combine.py reads that file, so the next design leans on modes that work. That
@@ -95,7 +95,7 @@ def run(task_dir: Path, modes_path: Path | None = None) -> bool:
     prev = None
     for rnd in range(CONFIG.max_calibration_rounds):
         print(f"calibrate: round {rnd + 1}/{CONFIG.max_calibration_rounds} on {task_dir.name}")
-        if not gate.run(task_dir, ["shape", "oracle", "nop", "mutations"]):
+        if not gate.run(task_dir, gate.PRE_MEASURE):
             build.revise(task_dir, gate_failures(task_dir), "Fix the failing gate stage(s) without changing the ticket.")
             continue
         gate.stage_difficulty(task_dir, round_no=rnd)

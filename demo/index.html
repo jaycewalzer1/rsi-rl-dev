@@ -283,7 +283,7 @@ function render() {
   const g = evs.filter(e => e.stage === "gate" && e.gate_stage);
   const tasks = {};
   for (const e of g) { const t = e.msg.split(" ")[0]; (tasks[t] = tasks[t] || {})[e.gate_stage] = e; }
-  const cols = ["shape", "oracle", "nop", "mutations"];
+  const cols = [...new Set(g.map(e => e.gate_stage))];
   $("gate").innerHTML = Object.keys(tasks).length ? `<table><thead><tr><th>Task</th>${cols.map(c => `<th>${c}</th>`).join("")}</tr></thead><tbody>${
     Object.entries(tasks).map(([t, r]) => `<tr><td class="mono">${esc(t)}</td>${cols.map(c => r[c] ? `<td class="${r[c].ok ? "pass" : "failt"}" title="${esc(r[c].msg)}">${r[c].ok ? "Pass" : "Fail"}</td>` : `<td class="empty">–</td>`).join("")}</tr>`).join("")
   }</tbody></table>` : `<p class="empty">The gate runs after export.</p>`;

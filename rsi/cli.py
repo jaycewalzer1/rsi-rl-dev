@@ -49,7 +49,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--modes-from", help="reuse the scan and paper check of an earlier run")
     p.add_argument("--families", type=int, default=3)
     p.add_argument("--rows", type=int, default=1500, help="root-table rows per data slice")
-    p.add_argument("--gate", default="shape,oracle,nop,mutations", help="gate stages for the exported tasks")
+    p.add_argument("--gate", default="shape,audit,oracle,nop,mutations", help="gate stages for the exported tasks")
     p.add_argument("--only", help="comma list of stages to (re)run: intake,modes,author,export,gate")
     p = sub.add_parser("qwen")
     p.add_argument("--run", required=True)

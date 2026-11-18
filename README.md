@@ -61,7 +61,7 @@ uv run rsi scan    --run r1       # runs/r1/complaints.jsonl
 uv run rsi papers  --run r1       # runs/r1/failure_modes.json
 uv run rsi combine --run r1       # runs/r1/design.json
 uv run rsi build   --run r1       # runs/r1/task/<slug>/
-uv run rsi gate      runs/r1/task/<slug>                       # all seven stages
+uv run rsi gate      runs/r1/task/<slug>                       # every stage
 uv run rsi gate      runs/r1/task/<slug> --stages oracle,nop,mutations
 uv run rsi summary   runs/r1/task/<slug>                       # STALE if the task changed since
 uv run rsi calibrate runs/r1/task/<slug>
@@ -71,6 +71,7 @@ Try the gate on the bundled smoke task (Docker only, no model calls):
 
 ```bash
 uv run rsi gate examples/tasks/smoke-ledger --stages oracle,nop,mutations
+uv run python -m rsi.audit examples/tasks/smoke-ledger         # the static audit alone, no Docker
 ```
 
 ## The testing suite
@@ -80,7 +81,8 @@ writes `authoring/gate/<stage>.json` stamped with the task checksum.
 
 | stage | passes when |
 |---|---|
-| shape | contract files exist, ticket 150 to 250 words, every criterion has hidden tests and a mutation |
+| shape | contract files exist, ticket 150 to 250 words, every criterion has hidden tests and a mutation, every criterion's sentence is in the ticket word for word |
+| audit | static leak and verifier checks (`rsi/audit.py`, no model, no Docker): no hidden file in the image, no reference already in the starting repo, no grader hints in the ticket, a `test.sh` that cannot hand out reward by accident |
 | oracle | the reference solution scores 1 in three separate Harbor runs |
 | nop | the untouched starting repo scores 0 |
 | mutations | every `authoring/mutations/*.patch` applied on top of the reference scores 0, with failing tests reported by assertion |
