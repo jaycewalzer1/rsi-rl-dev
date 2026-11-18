@@ -314,7 +314,8 @@ def _tally(task_dir: Path, trials: list[harbor.Trial]) -> dict:
     solved = sum(t.solved for t in graded) - len(unreproduced)
     return {"attempts": len(trials), "graded": len(graded), "voided": len(trials) - len(graded), "solved": solved,
             "rate": round(solved / len(graded), 3) if graded else None, "unreproduced": unreproduced,
-            "failed_tests": {t.name: harbor.failed_tests(t) for t in graded if not t.solved}}
+            "failed_tests": {t.name: harbor.failed_tests(t) for t in graded if not t.solved},
+            "failure_messages": {t.name: harbor.failure_messages(t) for t in graded if not t.solved}}
 
 
 def stage_difficulty(task_dir: Path, attempts: int | None = None, round_no: int = 0) -> dict:
@@ -419,7 +420,7 @@ Hidden test -> criterion map:
 {criteria}
 
 A cold attempt failed these hidden tests: {failed}
-
+{measured}
 For each failing test, quote the ONE ticket sentence it enforces, word for word. If no
 sentence plainly states the behaviour (it needs a second reading or an unstated
 assumption), mark it unfair.
@@ -427,27 +428,57 @@ assumption), mark it unfair.
 JSON: {{"tests": [{{"test": "...", "sentence": "... or null", "fair": true|false}}]}}"""
 
 
+def divergent_tests(failed_tests: dict[str, list[str]], messages: dict[str, dict[str, str]], min_attempts: int = 3) -> list[str]:
+    """Tests that every failed attempt failed, each with a different error. Attempts that agree
+    on how they fail usually share a misreading of a stated rule; attempts that each fail their
+    own way are usually guessing at a rule the ticket never stated."""
+    failing = [set(v) for v in failed_tests.values() if v]
+    if len(failing) < min_attempts:
+        return []
+    out = []
+    for test in sorted(set.intersection(*failing)):
+        seen = [messages.get(trial, {}).get(test, "") for trial, v in failed_tests.items() if v]
+        if all(seen) and len(set(seen)) == len(seen):
+            out.append(test)
+    return out
+
+
 def stage_inspect(task_dir: Path) -> dict:
-    diff = json.loads((task_dir / "authoring" / "gate" / "difficulty.json").read_text())
+    """Fairness. The judge must tie every failing test to a ticket sentence, and the quote is
+    checked against the ticket mechanically. Each distinct set of failing tests gets
+    CONFIG.inspect_reviews independent reviews; one 'unfair' is enough (a single review misses
+    too much). What the attempts did is evidence too: tests that every attempt failed in its
+    own way, and tests that even hinted attempts all failed, are flagged for the judge."""
+    gate_dir = task_dir / "authoring" / "gate"
+    diff = json.loads((gate_dir / "difficulty.json").read_text())
     ticket = (task_dir / "instruction.md").read_text()
     criteria = (task_dir / "authoring" / "criteria.json").read_text()
     flat = " ".join(ticket.split())
-    unfair, checked = set(), 0
-    for model in diff["models"].values():
-        for trial, failed in model["failed_tests"].items():
-            if not failed:
-                continue
-            verdict = llm.ask_json(
-                INSPECT.format(ticket=ticket, criteria=criteria, failed=failed), CONFIG.judge_model
-            )
-            checked += 1
+
+    failed_tests = {t: f for m in diff["models"].values() for t, f in m["failed_tests"].items()}
+    messages = {t: f for m in diff["models"].values() for t, f in m.get("failure_messages", {}).items()}
+    suspects = {t: "every attempt failed it, each with a different error" for t in divergent_tests(failed_tests, messages)}
+    hinted_path = gate_dir / "hinted.json"
+    if hinted_path.exists() and (h := json.loads(hinted_path.read_text())).get("checksum") == diff.get("checksum"):
+        suspects.update({t: "every hinted attempt failed it too" for t in h.get("always_failed", [])})
+
+    votes: dict[str, int] = {}
+    sets = sorted({tuple(sorted(f)) for f in failed_tests.values() if f})
+    for failed in sets:
+        flagged = {t: why for t, why in suspects.items() if t in failed}
+        measured = ("\nMeasured, and usually the sign of a requirement the ticket never states. Look twice before calling these fair:\n"
+                    + "\n".join(f"- {t}: {why}" for t, why in flagged.items()) + "\n") if flagged else ""
+        for _ in range(max(1, CONFIG.inspect_reviews)):
+            verdict = llm.ask_json(INSPECT.format(ticket=ticket, criteria=criteria, failed=list(failed), measured=measured), CONFIG.judge_model)
             for t in verdict["tests"]:
                 if not t.get("fair") or not t.get("sentence") or " ".join(t["sentence"].split()) not in flat:
-                    unfair.add(t["test"])
+                    votes[t["test"]] = votes.get(t["test"], 0) + 1
+    unfair = sorted(votes)
     return _save(
         task_dir, "inspect", not unfair,
-        {"judge_model": CONFIG.judge_model, "unfair_tests": sorted(unfair),
-         "note": f"{checked} failed attempts read, {len(unfair)} unfair tests"},
+        {"judge_model": CONFIG.judge_model, "reviews": max(1, CONFIG.inspect_reviews), "unfair_tests": unfair, "unfair_votes": votes,
+         "suspect_tests": suspects,
+         "note": f"{len(sets)} distinct failures read {max(1, CONFIG.inspect_reviews)} times each, {len(unfair)} unfair tests, {len(suspects)} flagged by the attempts"},
     )
 
 

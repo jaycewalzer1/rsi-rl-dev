@@ -86,6 +86,21 @@ def failed_tests(trial: Trial) -> list[str]:
     return [t["name"] for t in tests if t.get("status") == "failed"]
 
 
+def failure_messages(trial: Trial) -> dict[str, str]:
+    """Failing test -> one line saying how it failed, from the CTRF report: the first line of its
+    message, or the last line of its trace ('' if the report carries neither)."""
+    ctrf = trial.dir / "verifier" / "ctrf.json"
+    if not ctrf.exists():
+        return {}
+    tests = json.loads(ctrf.read_text()).get("results", {}).get("tests", [])
+    out = {}
+    for t in tests:
+        if t.get("status") == "failed":
+            message, trace = str(t.get("message") or "").strip().splitlines(), str(t.get("trace") or "").strip().splitlines()
+            out[t["name"]] = (message[0] if message else trace[-1] if trace else "")[:200]
+    return out
+
+
 def agent_patch(trial: Trial) -> str | None:
     """What the attempt changed in /app, as the task's test.sh recorded it (docs/TASK_CONTRACT.md).
     None when the task does not record it."""

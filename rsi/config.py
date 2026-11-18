@@ -41,6 +41,8 @@ class Config:
     band_high: float = float(_env("RSI_BAND_HIGH", "0.35"))
     attempts: int = int(_env("RSI_ATTEMPTS", "8"))
     max_calibration_rounds: int = int(_env("RSI_MAX_ROUNDS", "4"))
+    # independent fairness reviews per distinct set of failing tests; one "unfair" is enough
+    inspect_reviews: int = int(_env("RSI_INSPECT_REVIEWS", "3"))
     # hinted attempts: the solver is told every criterion and where builds usually slip. Run
     # when no cold attempt solved the task ("auto"), on every measurement ("always"), or never ("off")
     hinted: str = _env("RSI_HINTED", "auto")

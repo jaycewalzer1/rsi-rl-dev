@@ -46,6 +46,7 @@ def _pooled(prev: dict | None, new: dict, task_dir: Path) -> dict:
         cur["voided"] += old["voided"]
         cur["failed_tests"] = {**old["failed_tests"], **cur["failed_tests"]}
         cur["unreproduced"] = old.get("unreproduced", []) + cur.get("unreproduced", [])
+        cur["failure_messages"] = {**old.get("failure_messages", {}), **cur.get("failure_messages", {})}
         cur["rate"] = round(cur["solved"] / cur["graded"], 3) if cur["graded"] else None
         cur["wilson95"] = [round(x, 3) for x in gate.wilson(cur["solved"], cur["graded"])]
         cur["verdict"] = gate.band_verdict(cur["solved"], cur["graded"])

@@ -137,3 +137,33 @@ inspect stage's question. SPADE itself notes that a hint can mislead and that re
 estimate.
 
 **Status.** Built. `tests/test_hinted.py`, Harbor faked. Not yet run under Harbor.
+
+## 5. Fairness: repeated review, and what the attempts show
+
+**The work.** EvoEnv (arXiv:2605.14392) audited its own semantic self-review: one review of
+a generated environment reached F1 47.1% against an external label; three independent
+reviews with an any-reject rule reached 87.0%. LHAW (arXiv:2602.10525) makes the wider
+point about ambiguity: do not ask a model whether a task is underspecified, run agents and
+classify by whether their end states diverge. The Terminal-Bench guideline asks the same of
+task authors: instructions specified well enough "that meeting them implies passing the
+tests", and failures reviewed in batches.
+
+**What this repo already had, and it is the strong part.** Every failing test of a failed
+attempt must map to a ticket sentence quoted word for word, and the quote is checked against
+the ticket by string match, not by the judge's say-so.
+
+**What changed.**
+- Each distinct set of failing tests is reviewed `RSI_INSPECT_REVIEWS` times (default 3) and
+  one "unfair" is enough. Reviews run per distinct set, not per attempt.
+- The attempts are evidence. A test that every failed attempt failed, each with a different
+  error message, is flagged (a rule in `DIFFICULTY_RULES.md` that was prose until now).
+  So is a test that every hinted attempt failed. Flags go into the judge's prompt and into
+  `inspect.json`; they do not decide the verdict on their own.
+- The difficulty stage stores one line per failing test saying how it failed (from CTRF).
+
+**Left out.** LHAW removes information from a known-good task and measures the damage. This
+stage only reads divergence off attempts it already has, so with 3 to 8 attempts the signal
+is thin. The 47% to 87% figures are EvoEnv's, for a 4B reviewer on generated puzzles; the
+judge here is a frontier model on tickets, and nobody has measured its review accuracy.
+
+**Status.** Built. `tests/test_inspect.py`, judge faked. Not yet run with a real judge.

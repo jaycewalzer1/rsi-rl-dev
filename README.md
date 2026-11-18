@@ -90,7 +90,7 @@ writes `authoring/gate/<stage>.json` stamped with the task checksum.
 | shortcut | three red-team attempts per model (exploit the grader; the same with the hidden test names; hard-code the narrowest pass) score 0. A pass is replayed in a clean container: if it dies there it was tampering (logged, neutralised); if it survives, the judge reads it next to the reference and only a real implementation clears it |
 | difficulty | K cold attempts per solver model; pass rate in the band with at least one full solve (Wilson interval, errored trials void). A pass counts only if its recorded patch passes again in a clean container |
 | hinted | only when no cold attempt solved it: attempts that are told every criterion and where builds slip. A solve proves the task possible; none means unproven, and calibration fixes the tests instead of deleting cases |
-| inspect | every failing test of every failed attempt maps to a ticket sentence quoted word for word |
+| inspect | every failing test of every failed attempt maps to a ticket sentence quoted word for word (the quote is string-matched against the ticket). Each distinct failure is reviewed three times and one "unfair" is enough; tests every attempt failed in its own way, or every hinted attempt failed, are flagged for the judge |
 
 ## Business data in, a measured Qwen improvement out
 
@@ -173,6 +173,7 @@ All settings are environment variables (see `rsi/config.py`):
 | `RSI_TARGET_RATE` / `RSI_BAND_LOW` / `RSI_BAND_HIGH` | `0.25` / `0.15` / `0.35` |
 | `RSI_ATTEMPTS` | `8` cold attempts per model per round |
 | `RSI_MAX_ROUNDS` | `4` calibration rounds |
+| `RSI_INSPECT_REVIEWS` | `3` independent fairness reviews per distinct failure; one "unfair" is enough |
 | `RSI_HINTED`, `RSI_HINTED_ATTEMPTS` | `auto` (hinted attempts only when nobody solved it cold; `always`, `off`), `4` |
 | `RSI_HARBOR`, `RSI_HARBOR_ENV` | `harbor`, `docker` |
 | `RSI_LLM` | `cli` (headless `claude -p`) or `api` (Messages API with `ANTHROPIC_API_KEY`) |
