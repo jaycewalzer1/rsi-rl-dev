@@ -20,6 +20,8 @@ class Config:
     # model that writes designs and tasks, and model whose pass rate we calibrate against
     author_model: str = _env("RSI_AUTHOR_MODEL", "claude-opus-5-5")
     judge_model: str = _env("RSI_JUDGE_MODEL", "claude-sonnet-5-5")
+    # model that must solve a new family's tickets cold; kept different from the author
+    check_model: str = _env("RSI_CHECK_MODEL", "claude-opus-5-5")
     solver_models: tuple[str, ...] = tuple(
         _env("RSI_SOLVER_MODELS", "anthropic/claude-opus-5-5").split(",")
     )

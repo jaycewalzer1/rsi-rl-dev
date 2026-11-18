@@ -1,32 +1,27 @@
 """The whole factory as a swarm of agents, logged to runs/<run>/events.jsonl for the demo page.
 
-    intake     loader per table, pruner per table, steward agent per table (judge model)
+    intake     loader per table, pruner per table, slicer, steward agent per table (judge model)
     scan       HN scouts (Algolia API, one per query) + X scouts (X API, or web-search snippets)
                then labeller agents, 25 posts each, keep concrete failures only
     papers     one reader agent per complaint category: arXiv + Semantic Scholar, judge keeps
                the category only if a paper measures it; seed modes merged in
-    crossref   mapper agents tie every task rule (bizops.RULES) to the complaints and papers
-               that back it, and the history prior orders rules by how often they made solvers slip
-    design     the "impossible" task: every rule stacked (level 8), plus the descending ladder
-               (which rule comes off at each step, slip-weakest first)
-    export     the impossible task and the ladder steps as Harbor tasks (docs/TASK_CONTRACT.md)
-    gate       your pipeline: `rsi gate` shape, oracle, nop, mutations on the exported tasks;
-               difficulty/calibrate when solver credentials are set
-    qwen       (separate GPU-queue job, `rsi qwen`) benchmark, anneal, post-train, benchmark
+    author     planner + one author agent per task family (author model) write the families for
+               THIS dataset; the mechanical checker and a cold solve by a different model decide
+    export     each accepted family's top level (every rule on) as a Harbor task
+    gate       your pipeline: `rsi gate` shape, oracle, nop, mutations on the exported tasks
+    qwen       (separate GPU-queue job, `rsi qwen`) calibrate, benchmark, post-train, benchmark
 
-    rsi swarm --run NAME [--business PATH] [--skip-scan] [--gate STAGES]
+    rsi factory --run NAME --business DIR [--modes-from RUN] [--families 3] [--gate STAGES]
 """
 
 from __future__ import annotations
 
-import json
-import random
+import shutil
 from pathlib import Path
 
-from . import bizops, events, gate, intake, llm, papers, scan_hn, scan_x
-from .combine import mode_weights
+from . import author, events, family as F, gate, intake, papers, scan_hn, scan_x
 from .config import CONFIG
-from .store import read_json, write_json, write_jsonl
+from .store import read_json, read_jsonl, write_json, write_jsonl
 
 DEFAULT_BUSINESS = Path(__file__).resolve().parent.parent / "examples" / "business" / "shoe-store" / "raw"
 X_HINTS = [
@@ -83,9 +78,6 @@ def read_papers(out: Path, complaints: list[dict]) -> list[dict]:
     found = events.swarm("papers", "reader", list(cats.items()), lambda kv, a: papers.read_category(*kv),
                          workers=6, label=lambda kv: f"{kv[0]} ({len(kv[1])} complaints)")
     modes = papers.merge_seeds([m for m in found if m])
-    for m in modes:
-        for p in m.get("papers", [])[:2]:
-            events.emit("artifact", stage="papers", role=m["origin"], msg=f"{m['id']}: {p['title']}", url=p["url"])
     write_json(out / "failure_modes.json", modes)
     fresh = sum(m["origin"] == "scan" for m in modes)
     events.emit("stage_end", stage="papers", msg=f"{fresh} paper-backed modes from the scan, {len(modes) - fresh} seeds",
@@ -93,76 +85,39 @@ def read_papers(out: Path, complaints: list[dict]) -> list[dict]:
     return modes
 
 
-MAP = """Task rule (one business rule a refunds job must follow):
-  {rule_id}: {sentence}
-  Failure mode it is meant to exercise: {mode}
-
-Documented failure modes of AI coding agents (id: description):
-{modes}
-
-Which of these documented modes does this rule exercise? A mode counts only when an agent
-that has this failure would plausibly get THIS rule wrong.
-JSON: {{"supported_by": ["<mode id>", ...], "why": "one sentence"}}"""
-
-
-def crossref(out: Path, modes: list[dict]) -> dict:
-    events.emit("stage_start", stage="crossref", msg="map every task rule to the complaints and papers behind it")
-    listing = "\n".join(f"- {m['id']}: {m['mode'][:240]}" for m in modes)
-    by_id = {m["id"]: m for m in modes}
-
-    def mapper(rule, agent):
-        rid, mode, sentence, _ = rule
-        v = llm.ask_json(MAP.format(rule_id=rid, sentence=sentence, mode=mode, modes=listing), CONFIG.judge_model)
-        ids = [i for i in v.get("supported_by", []) if i in by_id]
-        ev = {"rule": rid, "mode": mode, "supported_by": ids, "why": v.get("why", ""),
-              "complaints": [c["url"] for i in ids for c in by_id[i].get("complaints", [])][:8],
-              "papers": [p["url"] for i in ids for p in by_id[i].get("papers", [])][:6]}
-        ev["_brief"] = f"{rid} <- {', '.join(ids) or 'nothing'}"
-        return ev
-
-    found = events.swarm("crossref", "mapper", bizops.RULES, mapper, workers=8, label=lambda r: r[0])
-    evidence = {e["rule"]: {k: v for k, v in e.items() if k != "_brief"} for e in found if e}
-    write_json(out / "rule_evidence.json", evidence)
-    backed = sum(1 for e in evidence.values() if e["papers"])
-    events.emit("stage_end", stage="crossref", msg=f"{backed}/{len(bizops.RULES)} rules backed by a paper", backed=backed)
-    return evidence
+def reuse_modes(out: Path, other: Path) -> list[dict]:
+    """Carry the scan and paper check over from an earlier run instead of repeating them."""
+    for name in ("complaints.jsonl", "failure_modes.json"):
+        shutil.copy(other / name, out / name)
+    complaints, modes = read_jsonl(out / "complaints.jsonl"), read_json(out / "failure_modes.json")
+    events.emit("stage_start", stage="scan", msg=f"reusing the scan and paper check from run {other.name}")
+    for c in complaints:
+        events.emit("artifact", stage="scan", role=c["provenance"], msg=c["failure"], url=c["url"], category=c["category"])
+    events.emit("stage_end", stage="scan", msg=f"{len(complaints)} concrete failures, reused from run {other.name}")
+    events.emit("stage_start", stage="papers", msg=f"reused from run {other.name}")
+    events.emit("stage_end", stage="papers", msg=f"{len(modes)} failure modes ({sum(m['origin'] == 'scan' for m in modes)} paper-backed from the scan)")
+    return modes
 
 
-def design(out: Path, evidence: dict, seed: int = 0) -> dict:
-    """The impossible task (all rules) and the ladder down: drop the rule least likely to make a solver slip first."""
-    events.emit("stage_start", stage="design", msg="stack every rule, then order the ladder down")
-    w = mode_weights([{"id": m} for m in {r[1] for r in bizops.RULES}])
-    rng = random.Random(seed)
-    slip = {rid: rng.betavariate(*w[mode]) + (0.05 if evidence.get(rid, {}).get("papers") else 0.0)
-            for rid, mode, _, _ in bizops.RULES}
-    order = sorted(bizops.RULE_IDS, key=lambda r: slip[r])  # weakest first: it comes off first
-    ladder, rules = [], list(bizops.RULE_IDS)
-    for drop in [None] + order[:-1]:
-        if drop:
-            rules.remove(drop)
-        ladder.append({"level": len(rules), "rules": list(rules), "dropped": drop})
-        events.emit("work", stage="design", agent="designer-01", role="designer",
-                    msg=f"level {len(rules)}: {'all rules' if not drop else 'drop ' + drop}", level=len(rules))
-    d = {"family": "bizops-refunds", "slip_prior": {k: round(v, 3) for k, v in slip.items()}, "ladder": ladder,
-         "store_id": "S02"}
-    write_json(out / "design.json", d)
-    events.emit("stage_end", stage="design", msg=f"impossible = {len(bizops.RULE_IDS)} rules; ladder of {len(ladder)} steps")
-    return d
+def emit_evidence(modes: list[dict]) -> None:
+    for m in modes:
+        for p in m.get("papers", [])[:2]:
+            events.emit("artifact", stage="papers", role=m["origin"], msg=f"{m['id']}: {p['title']}", url=p["url"])
 
 
-def export(out: Path, d: dict, levels: list[int]) -> list[Path]:
-    events.emit("stage_start", stage="export", msg=f"Harbor tasks for levels {levels}")
-    db = bizops.load_db(out / "business")
-    twins = bizops.twin_dbs()
+def export(out: Path) -> list[Path]:
+    """Each accepted family's hardest task, with params under which every rule changes the answer."""
+    events.emit("stage_start", stage="export", msg="top level of every accepted family as a Harbor task")
+    dbs = F.load_dbs(out / "business")
     dirs = []
-    for step in d["ladder"]:
-        if step["level"] in levels:
-            t = bizops.Task(tuple(step["rules"]), {"store_id": d["store_id"]})
-            p = bizops.export_harbor(t, db, out / "task", twins)
-            n = sum(len(c["tests"]) for c in json.loads((p / "authoring/criteria.json").read_text()))
-            events.emit("artifact", stage="export", agent="exporter", role="exporter",
-                        msg=f"{p.name}: {len(step['rules'])} criteria, {n} mapped tests", path=str(p))
-            dirs.append(p)
+    for fam in F.load_run(out):
+        full = tuple(fam.rule_ids)
+        best = max(fam.params_choices(dbs[0]), key=lambda p: min(F.effect(fam, dbs, p, full).values()))
+        d = F.export_harbor(fam, F.Task(fam.id, full, best), dbs, out / "task")
+        n = sum(len(c["tests"]) for c in read_json(d / "authoring" / "criteria.json"))
+        events.emit("artifact", stage="export", agent="exporter", role="exporter",
+                    msg=f"{d.name}: {len(full)} criteria, {n} mapped tests", path=str(d))
+        dirs.append(d)
     events.emit("stage_end", stage="export", msg=f"{len(dirs)} Harbor tasks")
     return dirs
 
@@ -173,7 +128,7 @@ def run_gate(dirs: list[Path], stages: list[str]) -> dict:
     for d in dirs:
         for st in stages:
             r = gate.RUNNERS[st](d)
-            events.emit("done" if r["ok"] else "fail", stage="gate", agent=f"gate-{d.name[-11:]}", role="gate",
+            events.emit("done" if r["ok"] else "fail", stage="gate", agent=f"gate-{d.name[:28]}", role="gate",
                         msg=f"{d.name} {st}: {'PASS' if r['ok'] else 'FAIL'} {r.get('note', '')}", gate_stage=st, ok=r["ok"])
             results.setdefault(d.name, {})[st] = r["ok"]
             if not r["ok"]:
@@ -182,24 +137,27 @@ def run_gate(dirs: list[Path], stages: list[str]) -> dict:
     return results
 
 
-def run(run_name: str, business: Path = DEFAULT_BUSINESS, skip_scan: bool = False,
-        gate_stages: list[str] | None = None, export_levels: list[int] | None = None) -> None:
+def run(run_name: str, business: Path = DEFAULT_BUSINESS, *, modes_from: str | None = None, families: int = 3,
+        gate_stages: list[str] | None = None, rows: int = 1500, only: list[str] | None = None) -> None:
+    """`only` limits the run to some stages (intake, modes, author, export, gate) and keeps the log."""
     out = CONFIG.runs_dir / run_name
     out.mkdir(parents=True, exist_ok=True)
-    events.open_log(out, fresh=True)
-    events.emit("stage_start", stage="run", msg=f"run {run_name}", models={
-        "judge": CONFIG.judge_model, "author": CONFIG.author_model, "solvers": list(CONFIG.solver_models)})
-    intake.run(business, out)
-    if skip_scan and (out / "complaints.jsonl").exists():
-        from .store import read_jsonl
-        complaints = read_jsonl(out / "complaints.jsonl")
-    else:
-        complaints = [] if skip_scan else scan(out)
-    modes = read_papers(out, complaints)
-    evidence = crossref(out, modes)
-    d = design(out, evidence)
-    dirs = export(out, d, export_levels or [8, 5, 3])
-    if gate_stages:
-        write_json(out / "gate.json", run_gate(dirs, gate_stages))
-    events.emit("stage_end", stage="run", msg="factory done; Qwen leg runs as its own GPU job (rsi qwen)")
-    print(f"swarm: done -> {out}")
+    todo = only or ["intake", "modes", "author", "export", "gate"]
+    events.open_log(out, fresh=only is None)
+    if only is None:
+        events.emit("stage_start", stage="run", msg=f"run {run_name}", models={
+            "judge": CONFIG.judge_model, "author": CONFIG.author_model, "check": CONFIG.check_model})
+    if "intake" in todo:
+        intake.run(business, out, rows=rows)
+    if "modes" in todo:
+        modes = reuse_modes(out, CONFIG.runs_dir / modes_from) if modes_from else read_papers(out, scan(out))
+        emit_evidence(modes)
+    if "author" in todo:
+        author.run(out, families)
+    if "export" in todo or "gate" in todo:
+        dirs = export(out)
+        if "gate" in todo and gate_stages:
+            write_json(out / "gate.json", run_gate(dirs, gate_stages))
+    if only is None:
+        events.emit("stage_end", stage="run", msg="factory done; the Qwen leg runs as its own GPU job (rsi qwen)")
+    print(f"factory: done -> {out}")

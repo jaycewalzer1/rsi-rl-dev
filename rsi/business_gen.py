@@ -50,7 +50,7 @@ def _iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def generate(seed: int = 7, n_customers: int = 140, n_orders: int = 260) -> dict[str, list[dict]]:
+def generate(seed: int = 7, n_customers: int = 600, n_orders: int = 2400) -> dict[str, list[dict]]:
     rng = random.Random(seed)
     tables: dict[str, list[dict]] = {}
 

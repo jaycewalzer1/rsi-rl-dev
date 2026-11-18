@@ -88,60 +88,59 @@ writes `authoring/gate/<stage>.json` stamped with the task checksum.
 | difficulty | K cold attempts per solver model; pass rate in the band with at least one full solve (Wilson interval, errored trials void) |
 | inspect | every failing test of every failed attempt maps to a ticket sentence quoted word for word |
 
-## The swarm, the business data and the Qwen leg
+## Business data in, a measured Qwen improvement out
 
-`rsi swarm` runs the factory as a swarm of agents over a company's data export and logs
-every agent to `runs/<run>/events.jsonl`; `rsi demo` shows it live or as a replay.
+`rsi factory` takes a company's data export and produces proven task families and Harbor
+tasks; `rsi qwen` post-trains a local Qwen on them and measures it before and after. Every
+agent is logged to `runs/<run>/events.jsonl`; `rsi demo` shows the run live or as a replay.
 
 ```
- business export (CSV) ──► intake: loader + pruner + steward agent per table
-                            PII columns, test rows, exact dupes, sparse/constant columns,
-                            orphans, enum noise dropped; resent events kept (they are data)
- HN (Algolia) + X ───────► scouts (one per query) ──► labellers ──► complaints.jsonl
+ business export (CSV) ──► intake: prune (PII, free text, test rows, dupes, orphans), money to
+                            integer cents, cut into disjoint slices; a steward agent per table
+ HN (Algolia) + X ───────► scouts ──► labellers ──► complaints.jsonl
  arXiv + Semantic Scholar ► one reader per complaint category ──► failure_modes.json
-                         ──► crossref: mapper agents tie each task rule to complaints + papers
-                         ──► design: the impossible task (all 8 rules) and the ladder down,
-                             weakest-slipping rule off first (Beta prior from history)
-                         ──► export: ladder steps as Harbor tasks ──► rsi gate (your pipeline)
-                         ──► qwen: benchmark, anneal down the ladder, post-train, benchmark
+                         ──► authors: a planner proposes business questions for THIS data; one
+                             author agent per question writes a task family (rsi/family.py):
+                             a plain job plus 6-8 switchable rules, each tied to a failure mode
+                               · mechanical checker (rsi/family_check.py): every rule must change
+                                 the answer on every slice of the real data, alone and in the full stack
+                               · a different model must solve the ticket cold and match the oracle
+                         ──► export: each family's top level as a Harbor task ──► rsi gate
+                         ──► qwen: calibrate, benchmark, post-train, benchmark
 ```
 
-**Tasks from the business data** (`rsi/bizops.py`). One function, refunds owed per order,
-with up to eight stacked rules, each one a sourced failure mode: in-store returns stamped
-in local time (sibling path), the 30-day window in store-local calendar days (time zones),
-final-sale exceptions (existing rule carried), resent webhook events (idempotency),
-quantity caps in request order (state across steps), net-of-discount refunds (derived
-value), exchanges that refund nothing but use up quantity, and one store only (tenancy).
-Rules a task leaves out are replaced by an explicit default sentence, so the ticket always
-says exactly what to compute. Oracles are exact; grading is all-or-nothing over the real
-pruned data plus two twin datasets. Exported tasks follow `docs/TASK_CONTRACT.md`: one
-mutation per rule (the reference with that rule forgotten), hidden tests mapped to the
-rule whose mutation they catch.
-
-The sample data in `examples/business/shoe-store/raw` is **synthetic** (`rsi/business_gen.py`,
-seed 7): a messy shoe-store export. Point `--business` at any folder of CSVs; the bizops
-rules are written for this schema, the intake is not.
+**Task families** (`rsi/family.py`). A family is one business question with an exact
+oracle and switchable rules. A task turns L rules on (its level); every rule that is off is
+replaced by an explicit default sentence, so the ticket always says exactly what to
+compute. The top level is the "impossible" start; level 0 is the plain job. Grading is
+all-or-nothing on every slice of the data: the slice the solver saw sample rows from and
+the hidden ones. `rsi/families/shoe_store.py` is the worked example, over the synthetic
+shoe store in `examples/business/` (`rsi/business_gen.py`).
 
 **The Qwen leg** (`rsi/qwen.py`) runs local Qwen3-VL-8B-Instruct (4-bit MLX, from the
 kokopelli repo) through kokopelli's GPU queue:
 
-1. benchmark before: held-out rule combinations at every level 8..1, greedy, all-or-nothing
-2. anneal: start at level 8 and walk the swarm's ladder down until the sampled pass rate
-   reaches the band (15 to 35%, target 25%)
-3. collect: rejection sampling on training combinations at and above that level, keep only
-   answers the oracle grades fully right
+1. calibrate: per family, come down from the top level until the pass rate reaches the band
+   (15 to 35%, target 25%); the benchmark sits at that level
+2. benchmark before: held-out rule combinations at that level (headline), one level harder,
+   and a control family from a different dataset; greedy, all-or-nothing
+3. collect: rejection sampling on training combinations around that level; keep only answers
+   the oracle grades fully right. The reward is the only teacher
 4. train: LoRA (r16 on q/k/v/o) with mlx-vlm's SFT trainer, loss on the answer only
-5. benchmark after: the same held-out set with the adapter
+5. benchmark after: the same held-out tasks with the adapter, with a paired exact test
 
-Benchmark combinations are never trained on (`bizops.split_combos`), so "after" measures
-transfer to rule stacks the model never saw graded. `runs/<run>/qwen/REPORT.md` names model,
-weights and adapter.
+Benchmark rule combinations are never trained on, so "after" measures transfer to rule
+stacks the model never saw graded. `runs/<run>/qwen/REPORT.md` names model, weights and
+adapter. Stages write as they go, so a stopped job resumes where it was.
 
 ```bash
-uv run rsi swarm --run r1 --gate shape,oracle,nop,mutations     # needs claude (judge) + docker (gate)
-uv run rsi qwen  --run r1                                       # queues the Qwen job
-uv run rsi demo  --run r1                                       # http://127.0.0.1:8791
-uv run rsi demo  --run r1 --export r1.html                      # self-contained replay
+# a real dataset: Olist, ~100k orders from a Brazilian marketplace (CC BY-NC-SA 4.0, not in this repo)
+mkdir -p data/olist/raw && cd data/olist/raw && for f in customers orders order_items order_payments order_reviews products sellers; do
+  curl -sLo $f.csv https://huggingface.co/datasets/bulutttt/olist-raw-data/resolve/main/olist_${f}_dataset.csv; done; cd -
+
+uv run rsi factory --run olist1 --business data/olist/raw      # needs claude (agents) + docker (gate)
+uv run rsi qwen    --run olist1                                # queues the Qwen job
+uv run rsi demo    --run olist1                                # http://127.0.0.1:8791
 ```
 
 ## Configuration
@@ -152,6 +151,7 @@ All settings are environment variables (see `rsi/config.py`):
 |---|---|
 | `RSI_AUTHOR_MODEL` | `claude-opus-5-5` (writes designs and tasks) |
 | `RSI_JUDGE_MODEL` | `claude-sonnet-5-5` (labels complaints, judges papers, reviews designs, inspects failures) |
+| `RSI_CHECK_MODEL` | `claude-opus-5-5` (must solve a new family's tickets cold; keep it different from the author) |
 | `RSI_SOLVER_MODELS` | `anthropic/claude-opus-5-5` (comma-separated; each must land in the band) |
 | `RSI_SOLVER_AGENT` | `claude-code` (any Harbor agent) |
 | `RSI_TARGET_RATE` / `RSI_BAND_LOW` / `RSI_BAND_HIGH` | `0.25` / `0.15` / `0.35` |

@@ -9,11 +9,11 @@
   rsi summary  TASK_DIR                   stage results, STALE if the task changed
   rsi calibrate TASK_DIR                  stage 6, hold the pass rate in the band
 
-  rsi intake   --run NAME [--business DIR]  stage 0, prune a business export (CSV folder)
-  rsi swarm    --run NAME [--business DIR] [--skip-scan] [--gate STAGES] [--levels 8,5,3]
-                                          the whole factory as a swarm, logged for the demo page
-  rsi qwen     --run NAME [...]           queue the Qwen leg on kokopelli's GPU queue:
-                                          benchmark, anneal, post-train, benchmark again
+  rsi factory  --run NAME --business DIR [--modes-from RUN] [--families 3] [--only STAGES]
+                                          business data in, proven task families and Harbor tasks out:
+                                          intake, scan + papers, author agents, export, gate
+  rsi qwen     --run NAME [--rounds N]    queue the Qwen leg on kokopelli's GPU queue:
+                                          calibrate to the 25% band, benchmark, post-train, benchmark
   rsi demo     --run NAME [--port 8791]   the demo page, live or replay
 """
 
@@ -43,22 +43,21 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--seed", type=int)
         p.add_argument("--tasks", type=int, default=1)
         p.add_argument("--skip-scan", action="store_true", help="use seed failure modes only")
-    p = sub.add_parser("intake")
+    p = sub.add_parser("factory")
     p.add_argument("--run", required=True)
-    p.add_argument("--business", type=Path)
-    p.add_argument("--no-stewards", action="store_true")
-    p = sub.add_parser("swarm")
-    p.add_argument("--run", required=True)
-    p.add_argument("--business", type=Path)
-    p.add_argument("--skip-scan", action="store_true")
-    p.add_argument("--gate", help="gate stages to run on the exported tasks, e.g. shape,oracle,nop,mutations")
-    p.add_argument("--levels", default="8,5,3", help="ladder levels to export as Harbor tasks")
+    p.add_argument("--business", type=Path, help="folder of CSV files, one table each (default: the synthetic shoe store)")
+    p.add_argument("--modes-from", help="reuse the scan and paper check of an earlier run")
+    p.add_argument("--families", type=int, default=3)
+    p.add_argument("--rows", type=int, default=1500, help="root-table rows per data slice")
+    p.add_argument("--gate", default="shape,oracle,nop,mutations", help="gate stages for the exported tasks")
+    p.add_argument("--only", help="comma list of stages to (re)run: intake,modes,author,export,gate")
     p = sub.add_parser("qwen")
     p.add_argument("--run", required=True)
     p.add_argument("--rounds", type=int, default=1)
     p.add_argument("--k", type=int, default=4)
-    p.add_argument("--bench-n", type=int, default=6)
-    p.add_argument("--collect-n", type=int, default=10)
+    p.add_argument("--bench-n", type=int, default=20)
+    p.add_argument("--collect-n", type=int, default=6)
+    p.add_argument("--smoke", action="store_true", help="a few answers per family, to see where Qwen stands")
     p.add_argument("--dry", action="store_true", help="print the queue command only")
     p = sub.add_parser("demo")
     p.add_argument("--run", required=True)
@@ -83,7 +82,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         return 0 if calibrate.run(a.task_dir) else 1
 
-    if a.cmd in ("intake", "swarm", "qwen", "demo"):
+    if a.cmd in ("factory", "qwen", "demo"):
         return _factory(a)
 
     out = run_dir(a.run)
@@ -111,25 +110,26 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _factory(a) -> int:
-    from . import intake, swarm
-    if a.cmd == "intake":
-        intake.run(a.business or swarm.DEFAULT_BUSINESS, run_dir(a.run), stewards=not a.no_stewards)
-    elif a.cmd == "swarm":
-        swarm.run(a.run, a.business or swarm.DEFAULT_BUSINESS, a.skip_scan, gate.stage_list(a.gate),
-                  [int(x) for x in a.levels.split(",")])
+    if a.cmd == "factory":
+        from . import swarm
+        swarm.run(a.run, a.business or swarm.DEFAULT_BUSINESS, modes_from=a.modes_from, families=a.families,
+                  gate_stages=gate.stage_list(a.gate), rows=a.rows, only=a.only.split(",") if a.only else None)
     elif a.cmd == "qwen":
         import shlex
         import subprocess
         from .qwen import KOKO
         root = Path(__file__).resolve().parent.parent
-        cmd = ["python3", str(KOKO / "kokopelli" / "ops" / "gpu.py"), "run", "--name", f"rsi_qwen_{a.run}",
+        what = "a few answers per family (smoke)" if a.smoke else (
+            "calibrated from the top level down to the 25% band, benchmarked on held-out tasks, LoRA "
+            "post-trained on graded-correct samples, benchmarked again")
+        cmd = ["python3", str(KOKO / "kokopelli" / "ops" / "gpu.py"), "run", "--name", f"rsi_qwen_{a.run}" + ("_smoke" if a.smoke else ""),
                "--priority", "50", "--gb", "18", "--cwd", str(root),
-               "--about", f"rsi-rl-dev Qwen leg on run {a.run}: Qwen3-VL-8B-Instruct 4-bit benchmarked on held-out "
-                          "business-data tasks, annealed from level 8 down to the 25% band, LoRA post-trained on "
-                          "graded-correct samples, benchmarked again",
-               "--output", f"runs/{a.run}/qwen", "--",
-               str(KOKO / ".venv" / "bin" / "python"), "-u", "-m", "rsi.qwen", "--run", a.run,
-               "--rounds", str(a.rounds), "--k", str(a.k), "--bench-n", str(a.bench_n), "--collect-n", str(a.collect_n)]
+               "--about", f"rsi-rl-dev Qwen leg on run {a.run}: Qwen3-VL-8B-Instruct 4-bit on task families written for "
+                          f"that run's business data; {what}",
+               "--output", f"runs/{a.run}/qwen" + ("_smoke" if a.smoke else ""), "--",
+               str(KOKO / ".venv" / "bin" / "python"), "-u", "-m", "rsi.qwen", "--run", a.run]
+        cmd += ["--smoke"] if a.smoke else ["--rounds", str(a.rounds), "--k", str(a.k), "--bench-n", str(a.bench_n),
+                                            "--collect-n", str(a.collect_n)]
         print(shlex.join(cmd))
         return 0 if a.dry else subprocess.call(cmd)
     elif a.cmd == "demo":

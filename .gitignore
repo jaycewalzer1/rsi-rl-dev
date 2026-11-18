@@ -7,3 +7,4 @@ runs/*
 jobs/
 .pytest_cache/
 authoring/gate/
+data/

@@ -77,6 +77,9 @@ section { background: var(--panel); border: 1px solid var(--line); border-radius
 .rung .val { font-weight: 700; text-align: right; font-variation-settings: "wdth" 80; }
 .rung.pending .val { color: var(--muted); font-weight: 400; }
 .rung.landed .lv { color: var(--after); }
+.rung.skipped .track { background: transparent; border-top: 1px dashed var(--line); height: 1px; }
+.famname { font-weight: 700; font-size: 14px; margin: 12px 0 2px; font-variation-settings: "wdth" 80; }
+.ladder .rung .track { height: 16px; }
 .axis { display: grid; grid-template-columns: 74px 1fr 64px; gap: 10px; font-size: 11.5px; color: var(--muted); margin-top: 4px; }
 .axis div:nth-child(2) { display: flex; justify-content: space-between; }
 .dropped { font-size: 12.5px; color: var(--ink-2); margin-top: 14px; }
@@ -115,7 +118,7 @@ footer { margin-top: 26px; color: var(--muted); font-size: 12.5px; }
   <header>
     <div>
       <h1>Task foundry</h1>
-      <p class="lede">Agents read a business data export, gather developer complaints and papers on how coding agents fail, and stack those failures into tasks over the data. Each task starts at a level no model can pass and comes down one rule at a time until the pass rate reaches about 25%. Then Qwen is trained on the tasks and benchmarked again.</p>
+      <p class="lede">A company's data export goes in. Agents prune it, gather documented ways coding agents fail, and write task families over the data whose rules exercise those failures. Each family starts at a level the model cannot pass and comes down until the pass rate is about 25%. Qwen is then trained on its own graded-correct answers and benchmarked again on held-out tasks.</p>
     </div>
     <div class="controls">
       <button id="live" aria-pressed="false">Live</button>
@@ -135,9 +138,9 @@ footer { margin-top: 26px; color: var(--muted); font-size: 12.5px; }
   <div class="grid g2" style="margin-bottom:18px">
     <section>
       <h2>Annealing</h2>
-      <p class="sub">Level 8 stacks every rule; each step down removes one. Each rung names the rule that came off. Bars show Qwen's pass rate on that rung's task, sampled at temperature 0.7. The shaded zone is the 15 to 35% band; the line is the 25% target.</p>
+      <p class="sub">Each task family starts with every rule on and comes down until Qwen's pass rate reaches the shaded 15 to 35% band. The line is the 25% target.</p>
       <div class="ladder" id="ladder"></div>
-      <div class="axis"><div></div><div><span>0%</span><span>25%</span><span>50%</span><span>75%</span><span>100%</span></div><div></div></div>
+      
       <p class="dropped" id="dropped"></p>
     </section>
     <section>
@@ -150,7 +153,7 @@ footer { margin-top: 26px; color: var(--muted); font-size: 12.5px; }
   <div class="grid g2" style="margin-bottom:18px">
     <section class="dumb">
       <h2>Qwen, before and after training</h2>
-      <p class="sub" id="qsub">Held-out rule combinations the model never trained on, greedy decoding, all-or-nothing grading on the real data and two twin datasets.</p>
+      <p class="sub" id="qsub">Held-out rule combinations the model never trained on, greedy decoding, all-or-nothing grading on three slices of the business's data.</p>
       <div class="headline" id="headline"></div>
       <div class="legend"><span><i style="background:var(--before)"></i>Before</span><span><i style="background:var(--after)"></i>After</span></div>
       <div id="dumb"></div>
@@ -164,7 +167,7 @@ footer { margin-top: 26px; color: var(--muted); font-size: 12.5px; }
 
   <section>
     <h2>Your pipeline: rsi gate</h2>
-    <p class="sub">Exported Harbor tasks run through shape, oracle, nop and mutation checks. A mutation is the reference solution with one rule forgotten; it must fail.</p>
+    <p class="sub">Each family's hardest task, exported in Harbor format, runs through shape, oracle, nop and mutation checks. A mutation is the reference solution with one rule forgotten; it must fail.</p>
     <div id="gate"></div>
   </section>
   <footer id="foot"></footer>
@@ -175,21 +178,20 @@ footer { margin-top: 26px; color: var(--muted); font-size: 12.5px; }
 window.__STATE__ = null;
 const STAGES = [
   ["intake", "Intake", "load the export"],
-  ["prune", "Prune", "PII, test rows, dupes, orphans"],
+  ["prune", "Prune", "PII, free text, dupes, orphans, slices"],
   ["scan", "Scan", "HN and X scouts, labellers"],
   ["papers", "Papers", "arXiv and Semantic Scholar readers"],
-  ["crossref", "Cross-reference", "rules to evidence"],
-  ["design", "Design", "impossible task and ladder"],
+  ["author", "Authors", "write task families, prove them"],
   ["export", "Export", "Harbor tasks"],
   ["gate", "Gate", "rsi gate"],
-  ["qwen", "Qwen", "bench, anneal, train, bench"],
+  ["qwen", "Qwen", "calibrate, bench, train, bench"],
 ];
-const QWEN = new Set(["bench_before", "anneal", "collect", "train", "bench_after", "qwen", "smoke"]);
+const QWEN = new Set(["calibrate", "collect", "train", "qwen", "smoke"]);
 const $ = id => document.getElementById(id);
 let all = [], cursor = 0, timer = null, liveTimer = null;
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const pct = v => Math.round(v * 100) + "%";
-const stageOf = e => QWEN.has(e.stage) ? "qwen" : e.stage;
+const stageOf = e => (QWEN.has(e.stage) || e.stage.startsWith("bench_")) ? "qwen" : e.stage;
 
 function render() {
   const evs = all.slice(0, cursor);
@@ -227,23 +229,28 @@ function render() {
   const run = evs.find(e => e.stage === "run" && e.models);
   if (run) $("models").textContent = `Each square is one agent: outlined while it works, filled when done, red if it failed. Judge ${run.models.judge}, author ${run.models.author}; trained model Qwen3-VL-8B-Instruct, 4-bit MLX.`;
 
-  // ladder
-  const design = evs.filter(e => e.stage === "design" && e.kind === "work");
-  const anneal = new Map(evs.filter(e => e.stage === "anneal" && e.kind === "metric").map(e => [e.level, e.value]));
-  const landed = evs.find(e => e.stage === "anneal" && e.kind === "stage_end");
-  $("ladder").innerHTML = [8,7,6,5,4,3,2,1].map(l => {
-    const v = anneal.get(l);
-    const d = design.find(e => e.level === l);
-    const rule = d ? (l === 8 ? "all rules" : d.msg.replace(/^level \d+: /, "")) : "";
-    return `<div class="rung ${v === undefined ? "pending" : ""} ${landed && landed.level === l ? "landed" : ""}">
-      <div class="lv">Level ${l}<small>${esc(rule)}</small></div>
-      <div class="track"><div class="bandzone" style="left:15%;width:20%"></div>
-        <div class="fill" style="width:${v === undefined ? 0 : Math.max(v * 100, v > 0 ? 1.5 : 0)}%;background:var(--heat-${l})"></div>
-        <div class="target" style="left:25%"></div></div>
-      <div class="val">${v === undefined ? "not run" : pct(v)}</div></div>`;
-  }).join("");
-  $("dropped").textContent = landed ? `Landed at level ${landed.level}: the first level, coming down from 8, where Qwen's pass rate reached the band. Training samples come from this level and the two above it.` :
-    anneal.size ? "Coming down one rule at a time." : "The anneal starts when the Qwen job gets its turn on the GPU queue.";
+  // ladder: one block per family, levels top down
+  const cal = evs.filter(e => e.stage === "calibrate" && e.kind === "metric");
+  const landed = evs.find(e => e.stage === "calibrate" && e.kind === "stage_end");
+  const fams = [...new Set(cal.map(e => e.family))];
+  $("ladder").innerHTML = fams.length ? fams.map(f => {
+    const m = new Map(cal.filter(e => e.family === f).map(e => [e.level, e]));
+    const top = Math.max(...m.keys(), 8), star = landed && landed.levels ? landed.levels[f] : null;
+    const rows = [];
+    for (let l = top; l >= 0; l--) {
+      const e = m.get(l); if (!e && !(l === top)) { if (l > Math.min(...m.keys())) rows.push(`<div class="rung pending skipped"><div class="lv">Level ${l}</div><div class="track"></div><div class="val">skipped</div></div>`); continue; }
+      const v = e ? e.value : undefined;
+      rows.push(`<div class="rung ${v === undefined ? "pending" : ""} ${star === l ? "landed" : ""}">
+        <div class="lv">Level ${l}${star === l ? " ★" : ""}</div>
+        <div class="track"><div class="bandzone" style="left:15%;width:20%"></div>
+          <div class="fill" style="width:${v ? Math.max(v * 100, 1.5) : 0}%;background:var(--heat-${Math.max(1, Math.min(8, l))})" data-tip="${esc(f)} level ${l}: ${e ? e.msg.split(": ")[1] : ""} solved"></div>
+          <div class="target" style="left:25%"></div></div>
+        <div class="val">${v === undefined ? "–" : pct(v)}</div></div>`);
+    }
+    return `<div class="famname">${esc(f)}</div>` + rows.join("");
+  }).join("") : "";
+  $("dropped").textContent = landed ? "★ marks the level each family's benchmark sits at: the one whose measured pass rate is nearest 25%." :
+    fams.length ? "Coming down from the top level." : "Calibration starts when the Qwen job gets its turn on the GPU queue.";
 
   // feed
   const feedEvs = evs.filter(e => ["work", "artifact", "fail", "done", "stage_start", "stage_end"].includes(e.kind)).slice(-160);
@@ -252,11 +259,15 @@ function render() {
     return `<div class="ev ${e.kind === "fail" ? "fail" : ""}"><div class="who">${esc(e.agent || e.stage)}</div><div class="msg">${msg}</div></div>`;
   }).join("");
 
-  // dumbbell
+  // before / after
   const before = evs.find(e => e.kind === "metric" && e.name === "bench_before");
-  const after = evs.find(e => e.kind === "metric" && e.name === "bench_after");
-  $("headline").innerHTML = (before ? `<div><b>${pct(before.value)}</b>before</div>` : "") + (after ? `<div><b>${pct(after.value)}</b>after</div>` : "");
-  $("dumb").innerHTML = before ? dumbbell(before.by_level, after && after.by_level) : `<p class="empty">The benchmark runs first in the Qwen job. Nothing has been measured yet.</p>`;
+  const afters = evs.filter(e => e.kind === "metric" && /^bench_after/.test(e.name || ""));
+  const after = afters[afters.length - 1];
+  const result = evs.filter(e => e.kind === "metric" && e.name === "result").pop();
+  $("headline").innerHTML = (before ? `<div><b>${pct(before.value)}</b>before, at the calibrated level</div>` : "")
+    + (after ? `<div><b>${pct(after.value)}</b>after training</div>` : "")
+    + (result ? `<div><b>${result.p < 0.001 ? "<0.001" : result.p}</b>paired p-value</div>` : "");
+  $("dumb").innerHTML = before ? dumbbell(before, after) : `<p class="empty">The benchmark runs after calibration. Nothing has been measured yet.</p>`;
 
   // evidence
   const ev = evs.filter(e => e.kind === "artifact" && (e.stage === "scan" || e.stage === "papers")).slice(-80).reverse();
@@ -276,18 +287,21 @@ function render() {
 }
 
 function dumbbell(b, a) {
-  const levels = Object.keys(b).map(Number).sort((x, y) => y - x);
-  const W = 560, rowH = 30, top = 8, left = 74, right = 54, H = top + levels.length * rowH + 26;
+  const names = { headline: "Headline (all families)", harder: "One level harder", control: "Control (other dataset)" };
+  const rows = [];
+  for (const k of ["headline", "harder", "control"]) if (b.sets[k] && b.sets[k].n) rows.push([names[k], b.sets[k], a && a.sets[k], true]);
+  for (const k of Object.keys(b.by_family || {})) rows.push([k, b.by_family[k], a && a.by_family && a.by_family[k], false]);
+  const W = 600, rowH = 30, top = 8, left = 220, right = 96, H = top + rows.length * rowH + 26;
   const x = v => left + v * (W - left - right);
-  let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Pass rate by level, before and after training">`;
+  let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Pass rate before and after training">`;
   for (const t of [0, .25, .5, .75, 1]) s += `<line x1="${x(t)}" x2="${x(t)}" y1="${top}" y2="${H - 22}" stroke="var(--line)" stroke-width="1"/><text x="${x(t)}" y="${H - 6}" text-anchor="middle" font-size="11" fill="var(--muted)">${pct(t)}</text>`;
-  levels.forEach((l, i) => {
-    const y = top + i * rowH + rowH / 2, vb = b[l].rate, va = a && a[l] ? a[l].rate : null;
-    s += `<text x="0" y="${y + 4}" font-size="13" font-weight="600" fill="var(--ink)">Level ${l}</text>`;
-    if (va !== null) s += `<line x1="${x(vb)}" x2="${x(va)}" y1="${y}" y2="${y}" stroke="var(--ink-2)" stroke-width="2"/>`;
-    s += `<circle cx="${x(vb)}" cy="${y}" r="6" fill="var(--before)" stroke="var(--panel)" stroke-width="2" data-tip="Level ${l} before: ${b[l].solved} of ${b[l].n} solved"/>`;
-    if (va !== null) s += `<circle cx="${x(va)}" cy="${y}" r="6" fill="var(--after)" stroke="var(--panel)" stroke-width="2" data-tip="Level ${l} after: ${a[l].solved} of ${a[l].n} solved"/>`;
-    s += `<text x="${W - 2}" y="${y + 4}" text-anchor="end" font-size="12" fill="var(--ink-2)">${b[l].solved}/${b[l].n}${va !== null ? " → " + a[l].solved + "/" + a[l].n : ""}</text>`;
+  rows.forEach(([label, vb, va, strong], i) => {
+    const y = top + i * rowH + rowH / 2;
+    s += `<text x="0" y="${y + 4}" font-size="${strong ? 13 : 12}" font-weight="${strong ? 700 : 400}" fill="var(--ink${strong ? "" : "-2"})">${esc(label)}</text>`;
+    if (va) s += `<line x1="${x(vb.rate)}" x2="${x(va.rate)}" y1="${y}" y2="${y}" stroke="var(--ink-2)" stroke-width="2"/>`;
+    s += `<circle cx="${x(vb.rate)}" cy="${y}" r="6" fill="var(--before)" stroke="var(--panel)" stroke-width="2" data-tip="${esc(label)}, before: ${vb.solved} of ${vb.n} solved"/>`;
+    if (va) s += `<circle cx="${x(va.rate)}" cy="${y}" r="6" fill="var(--after)" stroke="var(--panel)" stroke-width="2" data-tip="${esc(label)}, after: ${va.solved} of ${va.n} solved"/>`;
+    s += `<text x="${W - 2}" y="${y + 4}" text-anchor="end" font-size="12" fill="var(--ink-2)">${vb.solved}/${vb.n}${va ? " → " + va.solved + "/" + va.n : ""}</text>`;
   });
   return s + "</svg>";
 }
