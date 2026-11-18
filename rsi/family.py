@@ -22,6 +22,11 @@ slice the solver was shown rows from and the hidden twin slices.
 `export_harbor` writes a task in the docs/TASK_CONTRACT.md shape: reference = the family
 file with this task's rules on, one mutation per rule = the same with that rule off (the
 build that forgot it), hidden tests = one per answer key per slice. `rsi gate` runs on it.
+
+The exported verifier never lets the candidate's code and the answer key meet (TEST_SH,
+RUN_JOB, TEST_FILE below): the candidate runs in its own process with the expected answers
+off the disk, as `nobody` when the verifier is root, and hands its answer back as JSON. The
+tests then compare data with data. `run_verifier` runs the same script outside Docker.
 """
 
 from __future__ import annotations
@@ -389,17 +394,10 @@ def export_harbor(fam: Family, task: Task, dbs: list[dict], out_root: Path) -> P
             (d / "tests/data" / n / f"{t}.json").write_text(json.dumps(db[t]))
     (d / "tests/expected.json").write_text(json.dumps(
         {"params": task.params, "expected": expected, "cases": {n: sorted(v) for n, v in cases.items()}}))
+    (d / "tests/params.json").write_text(json.dumps(task.params))
     (d / "tests/test_job.py").write_text(TEST_FILE)
-    (d / "tests/test.sh").write_text(textwrap.dedent("""\
-        #!/bin/bash
-        mkdir -p /logs/verifier
-        cd /tests
-        if pytest --ctrf /logs/verifier/ctrf.json /tests/test_job.py -q -p no:cacheprovider; then
-          echo 1 > /logs/verifier/reward.txt
-        else
-          echo 0 > /logs/verifier/reward.txt
-        fi
-        """))
+    (d / "tests/run_job.py").write_text(RUN_JOB)
+    (d / "tests/test.sh").write_text(TEST_SH)
     (d / "authoring/criteria.json").write_text(json.dumps(criteria, indent=1))
     (d / "authoring/design.json").write_text(json.dumps({**task.as_dict(fam), "slug": d.name, "source": "rsi.family"}, indent=1))
     (d / "authoring/selfcheck.sh").write_text("#!/bin/bash\n# family tasks are checked by rsi gate (oracle, nop, mutations)\nexit 0\n")
@@ -411,26 +409,142 @@ def _diff(name: str, old: str, new: str) -> str:
     return f"diff --git a/{name} b/{name}\n{body}"
 
 
-TEST_FILE = '''import json
+def run_verifier(task_dir: Path, app_dir: Path, work: Path) -> dict:
+    """Run a family task's tests/test.sh outside Docker against `app_dir` (a git checkout of the
+    starting repo holding a candidate job.py). Returns the reward and what the verifier logged.
+    When this runs as root, `app_dir` must be readable by `nobody`, as /app is in the image."""
+    tests, logs = work / "tests", work / "logs"
+    shutil.copytree(task_dir / "tests", tests)
+    logs.mkdir(parents=True)
+    env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(work), "RSI_APP": str(app_dir), "RSI_TESTS": str(tests),
+           "RSI_LOGS": str(logs), "RSI_PYTHON": sys.executable, "RSI_NO_CTRF": "1"}  # the CTRF plugin lives in the image
+    p = subprocess.run(["bash", str(tests / "test.sh")], capture_output=True, text=True, env=env, timeout=600)
+    read = lambda name: json.loads((logs / name).read_text()) if (logs / name).exists() else None  # noqa: E731
+    return {"reward": float((logs / "reward.txt").read_text().strip() or 0), "answers": read("answers.json"),
+            "patch": (logs / "agent.patch").read_text() if (logs / "agent.patch").exists() else "",
+            "stdout": p.stdout[-3000:], "stderr": p.stderr[-3000:]}
+
+
+TEST_SH = r"""#!/bin/bash
+# Verifier. The candidate's code and the answer key never meet:
+#   0  reward starts at 0; record what the agent changed (replay and the rollout reader use it)
+#   1  the candidate runs in its own process, with the expected answers off the disk; as
+#      root it runs as `nobody`, which can neither read nor write the tests or the logs
+#   2  its answers are compared with the expected ones; its code is never imported here
+APP="${RSI_APP:-/app}"; TESTS="${RSI_TESTS:-/tests}"; LOGS="${RSI_LOGS:-/logs/verifier}"; PY="${RSI_PYTHON:-python3}"
+CTRF=(--ctrf "$LOGS/ctrf.json"); [ -n "$RSI_NO_CTRF" ] && CTRF=()
+sum() { "$PY" -I -c 'import hashlib, sys; print(hashlib.sha256(b"".join(open(p, "rb").read() for p in sys.argv[1:])).hexdigest())' "$@"; }
+mkdir -p "$LOGS"
+echo 0 > "$LOGS/reward.txt"
+MODE="$("$PY" -I -c 'import os, sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777)[2:])' "$LOGS")"
+trap 'chmod "$MODE" "$LOGS" 2> /dev/null' EXIT
+BASE="$(git -C "$APP" rev-list --max-parents=0 HEAD 2> /dev/null | tail -1)"
+git -C "$APP" add -A -- . ':(exclude,glob)**/__pycache__/**' > /dev/null 2>&1
+git -C "$APP" diff --cached --binary "$BASE" > "$LOGS/agent.patch" 2> /dev/null
+SUM="$(sum "$TESTS/test_job.py" "$TESTS/run_job.py")"
+KEY="$(cat "$TESTS/expected.json")"
+rm -f "$TESTS/expected.json"
+"$PY" -I "$TESTS/run_job.py" "$APP" "$TESTS" "$LOGS/answers.json"
+printf '%s' "$KEY" > "$TESTS/expected.json"
+if [ -z "$SUM" ] || [ "$(sum "$TESTS/test_job.py" "$TESTS/run_job.py")" != "$SUM" ]; then
+  echo "verifier files changed while the candidate ran" >&2
+  exit 1
+fi
+cd "$TESTS"
+if RSI_ANSWERS="$LOGS/answers.json" "$PY" -I -m pytest "${CTRF[@]}" "$TESTS/test_job.py" -q -p no:cacheprovider; then
+  echo 1 > "$LOGS/reward.txt"
+fi
+"""
+
+RUN_JOB = r'''"""Phase 1 of the verifier: run the candidate's solve() once per data slice, each in its own
+process, and write down what it answered.
+
+The candidate gets the tables and the job parameters on stdin and nothing else. It is given
+no path to the tests, the expected answers are not on the disk while it runs, and when this
+script is root the candidate runs as `nobody`, with the tests and the logs closed to it."""
+import json
+import os
+import pwd
+import signal
+import subprocess
 import sys
+import tempfile
+from pathlib import Path
+
+app, tests, out = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
+CHILD = """import json, sys
+sys.path.insert(0, sys.argv[1])
+job = json.load(sys.stdin)
+from job import solve
+ans = solve(job["db"], job["params"])
+sys.stdout.write("\\n" + json.dumps({str(k): v for k, v in (ans or {}).items()}))
+"""
+TIMEOUT = 120
+
+drop, isolation = {}, "same-user"
+if os.geteuid() == 0:
+    try:
+        nobody = pwd.getpwnam("nobody")
+        drop = {"user": nobody.pw_uid, "group": nobody.pw_gid, "extra_groups": []}
+        isolation = "nobody"
+        for p in (tests, out.parent):
+            os.chmod(p, 0o700)
+    except KeyError:
+        pass
+
+params = json.loads((tests / "params.json").read_text())
+result = {"isolation": isolation, "slices": {}}
+for d in sorted(p for p in (tests / "data").iterdir() if p.is_dir()):
+    db = {p.stem: json.loads(p.read_text()) for p in sorted(d.glob("*.json"))}
+    # files, not pipes: a process the candidate leaves behind cannot hold the verifier open
+    with tempfile.TemporaryFile("w+") as fin, tempfile.TemporaryFile("w+") as fout, tempfile.TemporaryFile("w+") as ferr:
+        json.dump({"db": db, "params": params}, fin)
+        fin.seek(0)
+        proc = subprocess.Popen([sys.executable, "-I", "-c", CHILD, app], stdin=fin, stdout=fout, stderr=ferr, cwd="/",
+                                start_new_session=True, env={"PATH": "/usr/local/bin:/usr/bin:/bin"}, **drop)
+        answer, error = None, ""
+        try:
+            code = proc.wait(timeout=TIMEOUT)
+        except subprocess.TimeoutExpired:
+            code, error = None, f"solve() did not finish in {TIMEOUT} s"
+        try:  # whatever the candidate left running in its session goes with it
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        proc.wait()
+        fout.seek(0)
+        ferr.seek(0)
+        if code is not None and code != 0:
+            error = (ferr.read().strip().splitlines() or [f"exit {code}"])[-1][:300]
+        elif code == 0:
+            try:
+                answer = json.loads(fout.read().strip().splitlines()[-1])
+            except Exception:
+                error = "solve() did not return a dict that json.dumps accepts"
+            if answer is not None and not isinstance(answer, dict):
+                answer, error = None, "solve() must return a dict"
+    result["slices"][d.name] = {"answer": answer, "error": error}
+out.write_text(json.dumps(result))
+'''
+
+TEST_FILE = '''"""Phase 2 of the verifier: compare what the candidate answered (answers.json, written by
+run_job.py) with the expected answers. Data against data; no candidate code runs here."""
+import json
+import os
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, "/app")
-
 HERE = Path(__file__).parent
 SPEC = json.loads((HERE / "expected.json").read_text())
-DBS = {d.name: {p.stem: json.loads(p.read_text()) for p in d.glob("*.json")} for d in (HERE / "data").iterdir()}
+RAN = json.loads(Path(os.environ.get("RSI_ANSWERS", "/logs/verifier/answers.json")).read_text())["slices"]
 CASES = [(n, k) for n in sorted(SPEC["cases"]) for k in SPEC["cases"][n]]
-_cache = {}
 
 
 def answer(n):
-    if n not in _cache:
-        from job import solve
-        _cache[n] = {str(a): b for a, b in (solve(DBS[n], dict(SPEC["params"])) or {}).items()}
-    return _cache[n]
+    got = RAN.get(n) or {"error": "the candidate was not run on this slice"}
+    assert not got.get("error"), got["error"]
+    return got["answer"]
 
 
 @pytest.mark.parametrize("n,k", CASES, ids=[f"{n}-{k}" for n, k in CASES])
@@ -438,7 +552,7 @@ def test_key(n, k):
     assert answer(n).get(k) == SPEC["expected"][n].get(k)
 
 
-@pytest.mark.parametrize("n", sorted(DBS))
+@pytest.mark.parametrize("n", sorted(SPEC["expected"]))
 def test_no_extra_keys(n):
     assert set(answer(n)) == set(SPEC["expected"][n])
 '''

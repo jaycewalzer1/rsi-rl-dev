@@ -11,19 +11,6 @@ def raw(seed=7, n=900):
     return {k: [{c: str(v) for c, v in r.items()} for r in v] for k, v in rows.items()}
 
 
-@pytest.fixture(scope="module")
-def business(tmp_path_factory):
-    out = tmp_path_factory.mktemp("run")
-    src = out / "raw"
-    business_gen.write_csv(business_gen.generate(7), src)
-    return intake.run(src, out, stewards=False, rows=800)
-
-
-@pytest.fixture(scope="module")
-def shoe():
-    return F.load(F.BUILTIN / "shoe_store.py")
-
-
 def test_prune_drops_pii_test_rows_dupes_and_orphans():
     tables, report = intake.prune(raw())
     assert "email" not in tables["customers"][0] and "full_name" not in tables["customers"][0]
@@ -105,7 +92,7 @@ def test_export_matches_the_task_contract(business, shoe, tmp_path):
     dbs = F.load_dbs(business)
     t = F.Task(shoe.id, ("window", "dedupe", "discount"), {"store_id": "S02"})
     d = F.export_harbor(shoe, t, dbs, tmp_path)
-    assert gate.stage_shape(d)["ok"]
+    assert gate.stage_shape(d)["ok"] and gate.stage_audit(d)["ok"]
     crit = json.loads((d / "authoring/criteria.json").read_text())
     assert [c["rule"] for c in crit] == list(t.rules) and all(c["tests"] for c in crit)
     assert len(list((d / "authoring/mutations").glob("*.patch"))) == 3

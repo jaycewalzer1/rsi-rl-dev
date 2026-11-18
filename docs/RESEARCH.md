@@ -38,3 +38,39 @@ paid for; it cannot see a verifier that is wrong in a way only running it shows.
 red-team stage and the replay (section 3) cover part of that.
 
 **Status.** Built. `tests/test_audit.py` holds one broken fixture per check.
+
+## 2. Reward integrity: a verifier the candidate cannot reach
+
+**The work.** TRACE (arXiv:2601.20103, ICML 2026) catalogues 54 kinds of reward exploit in
+code environments and shows LLM judges miss many of them. Countdown-Code (a testbed for
+reward hacking under RL with verifiable rewards) reports small Qwen models learning to edit
+the verifier within a few hundred RL steps once the exploit is reachable. The lesson both
+draw: an environment used for training has to make the exploit unreachable, because a
+judge reading trajectories afterwards will not catch it reliably.
+
+**What was wrong here.** The first exported family verifier imported the candidate's
+`solve()` into the pytest process, with `expected.json` on the disk beside it. Two cheats of
+a dozen lines each scored reward 1 on a full eight-rule task (checked on the old code before
+it was changed): open the answer key and return it, or walk the call stack and return the
+test module's `SPEC`.
+
+**What this repo does now.** `rsi/family.py` exports a three-phase `tests/test.sh`:
+0. reward starts at 0, and the agent's change to `/app` is written to
+   `/logs/verifier/agent.patch` (diffed against the repo's first commit, so an agent that
+   commits its work is still recorded)
+1. the candidate runs once per data slice in its own process. The answer key is off the
+   disk while it runs. As root (the Harbor default) it runs as `nobody` and can neither read
+   nor write `/tests` or the logs. It gets the tables on stdin and returns JSON
+2. pytest compares that JSON with the answer key. No candidate code is imported
+
+A hash of the test files is taken before phase 1 and checked after it.
+
+**Left out.** An agent with root in the container can replace `python3` or `pytest` before
+the verifier starts. Nothing inside `test.sh` stops that; the replay in section 3 does.
+Without root the privilege drop is off: the key removal and the hash check still hold, a
+process the candidate leaves behind does not get stopped.
+
+**Status.** Built, and run outside Docker: `tests/test_verifier.py` runs the real `test.sh`
+on a git checkout of the starting repo (as root, with the privilege drop). The reference
+scores 1; every mutation, the untouched repo and five cheats score 0. Not yet run under
+Harbor.

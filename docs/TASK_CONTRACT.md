@@ -56,6 +56,10 @@ directory. The gate (`rsi gate`) relies on every line below.
   names a test, a criterion file or the grader.
 - `tests/test.sh` installs nothing, never pipes the test runner without `set -o pipefail`,
   never ends the runner with `|| true`, and writes reward 1 only inside the runner's `if`.
+- Code under test never shares a process with an answer key. Tests compute expected values
+  from a live twin, or, when the values are precomputed, run the candidate in a separate
+  process and compare data with data (`TEST_SH` and `RUN_JOB` in `rsi/family.py` are the
+  worked example: key off the disk, candidate as `nobody`, JSON back).
 
 ## Fairness
 - Every hidden test maps to one ticket sentence quoted word for word (`criteria.json`).
