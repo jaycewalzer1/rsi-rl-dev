@@ -74,3 +74,34 @@ process the candidate leaves behind does not get stopped.
 on a git checkout of the starting repo (as root, with the privilege drop). The reference
 scores 1; every mutation, the untouched repo and five cheats score 0. Not yet run under
 Harbor.
+
+## 3. Reward integrity: red team and replay
+
+**The work.** The Terminal-Bench guideline (arXiv:2604.28093) recommends "please hack" trials,
+with the test signatures put in the prompt, to find exploitable tasks before release. TRACE
+(arXiv:2601.20103) finds judges detect exploits better when they compare a suspect
+trajectory with benign ones than when they classify it alone. SWE-bench style evaluation
+applies the model's patch in a clean container, so nothing the agent did outside the repo
+can touch the grade.
+
+**What this repo does.**
+- The `shortcut` stage was one attempt, same model, one prompt. It now runs three
+  strategies per red-team model (`RSI_REDTEAM_MODELS`): exploit the grader; the same with
+  the hidden test names in the prompt; hard-code the narrowest thing that passes.
+- Every passing attempt is replayed (`gate.replay`): its recorded `agent.patch` is applied
+  to a clean copy of the task and verified again. In the red-team stage, a pass that dies
+  on replay was tampering and is logged as neutralised; a pass that survives is read by the
+  judge next to the reference, and only "a real implementation", backed by lines that are
+  literally in the patch, clears it. Everything else blocks the task.
+- The `difficulty` stage counts a cold pass only if it survives replay. Passes that do not
+  are listed as `unreproduced`.
+- The contract now makes `tests/test.sh` write reward 0 first and record `agent.patch`.
+
+**Left out.** Replay re-runs the verifier, it does not prove the tests are right. A patch
+that special-cases what the tests check survives replay; the three red-team prompts and the
+contrastive judge are the only defence against that, and TRACE is clear that judges miss
+exploits. Files git ignores are not in the patch, so a solution that depends on them fails
+replay by design.
+
+**Status.** Built. `tests/test_redteam.py` fakes Harbor and the judge and checks every
+outcome. Not yet run under Harbor.

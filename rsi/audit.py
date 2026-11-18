@@ -159,7 +159,13 @@ def verifier_script(t: Task) -> list[dict]:
             out.append(_f("verifier-masked-status", "block", f"a pipe hides the test runner's exit status (no `set -o pipefail`): {line[:100]}"))
         if RUNNER.search(line) and re.search(r"\|\|\s*(true|:)(\s|;|$)", line):
             out.append(_f("verifier-masked-status", "block", f"`|| true` hides the test runner's exit status: {line[:100]}"))
+    if "agent.patch" not in script:
+        out.append(_f("verifier-no-patch", "warn", "tests/test.sh does not record /logs/verifier/agent.patch: passes cannot be replayed "
+                                                   "and failed attempts cannot be read (docs/TASK_CONTRACT.md)"))
     writes_one = re.search(r"echo\s+['\"]?1(\.0)?['\"]?\s*>+\s*\S*reward", script)
+    writes_zero = re.search(r"echo\s+['\"]?0(\.0)?['\"]?\s*>+\s*\S*reward", script)
+    if writes_one and not (writes_zero and writes_zero.start() < writes_one.start()):
+        out.append(_f("verifier-no-default", "warn", "tests/test.sh does not write reward 0 before it runs anything: a crash leaves no reward"))
     if writes_one and not re.search(r"\bif\b|&&", script):
         out.append(_f("verifier-unconditional", "block", "tests/test.sh writes reward 1 without a condition"))
     return out

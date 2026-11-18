@@ -84,3 +84,10 @@ def failed_tests(trial: Trial) -> list[str]:
         return []
     tests = json.loads(ctrf.read_text()).get("results", {}).get("tests", [])
     return [t["name"] for t in tests if t.get("status") == "failed"]
+
+
+def agent_patch(trial: Trial) -> str | None:
+    """What the attempt changed in /app, as the task's test.sh recorded it (docs/TASK_CONTRACT.md).
+    None when the task does not record it."""
+    p = trial.dir / "verifier" / "agent.patch"
+    return p.read_text(errors="replace") if p.exists() else None

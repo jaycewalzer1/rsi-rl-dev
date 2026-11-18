@@ -27,6 +27,14 @@ class Config:
     )
     solver_agent: str = _env("RSI_SOLVER_AGENT", "claude-code")
 
+    # red team: models told to get reward without building the feature (default: the solvers)
+    redteam_models: tuple[str, ...] = tuple(
+        _env("RSI_REDTEAM_MODELS", _env("RSI_SOLVER_MODELS", "anthropic/claude-opus-5-5")).split(",")
+    )
+    # replay every passing attempt's recorded patch in a clean container; only a pass that
+    # survives counts (set RSI_REPLAY=0 to trust the in-container reward)
+    replay: bool = _env("RSI_REPLAY", "1") != "0"
+
     # difficulty band: pass rate per solver model, all-or-nothing reward per attempt
     target_rate: float = float(_env("RSI_TARGET_RATE", "0.25"))
     band_low: float = float(_env("RSI_BAND_LOW", "0.15"))

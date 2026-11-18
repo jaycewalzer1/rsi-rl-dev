@@ -20,6 +20,12 @@ directory. The gate (`rsi gate`) relies on every line below.
   tests/test.sh             runs the hidden tests in /tests against /app, writes a CTRF report
                             to /logs/verifier/ctrf.json and 1 or 0 to /logs/verifier/reward.txt:
                             1 only if EVERY hidden test passes (all-or-nothing)
+                            It starts with these lines, so a crash scores 0 and the gate can
+                            replay the attempt and read what it built:
+                              mkdir -p /logs/verifier; echo 0 > /logs/verifier/reward.txt
+                              BASE="$(git -C /app rev-list --max-parents=0 HEAD | tail -1)"
+                              git -C /app add -A -- . ':(exclude,glob)**/__pycache__/**'
+                              git -C /app diff --cached --binary "$BASE" > /logs/verifier/agent.patch
   tests/...                 hidden tests; the agent never sees this folder
   authoring/design.json     the design from `rsi combine` (written by the pipeline)
   authoring/criteria.json   [{"id": "AC1", "text": "...", "mode": "<failure mode id>",
@@ -56,6 +62,9 @@ directory. The gate (`rsi gate`) relies on every line below.
   names a test, a criterion file or the grader.
 - `tests/test.sh` installs nothing, never pipes the test runner without `set -o pipefail`,
   never ends the runner with `|| true`, and writes reward 1 only inside the runner's `if`.
+- The answer is the repo diff and nothing else. The gate replays every passing attempt's
+  `agent.patch` alone in a clean container (`rsi/gate.py`, `replay`); a pass that does not
+  survive is not a pass. A solution that needs anything outside `/app` fails by design.
 - Code under test never shares a process with an answer key. Tests compute expected values
   from a live twin, or, when the values are precomputed, run the candidate in a separate
   process and compare data with data (`TEST_SH` and `RUN_JOB` in `rsi/family.py` are the

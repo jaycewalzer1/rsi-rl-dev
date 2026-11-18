@@ -86,8 +86,8 @@ writes `authoring/gate/<stage>.json` stamped with the task checksum.
 | oracle | the reference solution scores 1 in three separate Harbor runs |
 | nop | the untouched starting repo scores 0 |
 | mutations | every `authoring/mutations/*.patch` applied on top of the reference scores 0, with failing tests reported by assertion |
-| shortcut | a solver told to game the grader without building the feature scores 0 |
-| difficulty | K cold attempts per solver model; pass rate in the band with at least one full solve (Wilson interval, errored trials void) |
+| shortcut | three red-team attempts per model (exploit the grader; the same with the hidden test names; hard-code the narrowest pass) score 0. A pass is replayed in a clean container: if it dies there it was tampering (logged, neutralised); if it survives, the judge reads it next to the reference and only a real implementation clears it |
+| difficulty | K cold attempts per solver model; pass rate in the band with at least one full solve (Wilson interval, errored trials void). A pass counts only if its recorded patch passes again in a clean container |
 | inspect | every failing test of every failed attempt maps to a ticket sentence quoted word for word |
 
 ## Business data in, a measured Qwen improvement out
@@ -166,6 +166,8 @@ All settings are environment variables (see `rsi/config.py`):
 | `RSI_CHECK_MODEL` | `claude-opus-5-5` (must solve a new family's tickets cold; keep it different from the author) |
 | `RSI_SOLVER_MODELS` | `anthropic/claude-opus-5-5` (comma-separated; each must land in the band) |
 | `RSI_SOLVER_AGENT` | `claude-code` (any Harbor agent) |
+| `RSI_REDTEAM_MODELS` | the solver models (comma-separated; models told to get reward without building the feature) |
+| `RSI_REPLAY` | `1` (replay every pass from its recorded patch; `0` trusts the in-container reward) |
 | `RSI_TARGET_RATE` / `RSI_BAND_LOW` / `RSI_BAND_HIGH` | `0.25` / `0.15` / `0.35` |
 | `RSI_ATTEMPTS` | `8` cold attempts per model per round |
 | `RSI_MAX_ROUNDS` | `4` calibration rounds |

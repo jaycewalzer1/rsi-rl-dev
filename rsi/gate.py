@@ -7,8 +7,11 @@ Stages, in order, stopping at the first hard failure:
   oracle      reference solution scores 1, three runs, same result each time
   nop         untouched base scores 0
   mutations   every authoring/mutations/*.patch on top of the reference scores 0
-  shortcut    an agent told to game the grader without building the feature scores 0
-  difficulty  K cold attempts per solver model; pass rate inside the band, at least one solve
+  shortcut    red-team attempts (exploit the grader; the same with the hidden test names;
+              hard-code the narrowest thing that passes) score 0, or what passes is judged a
+              real implementation next to the reference
+  difficulty  K cold attempts per solver model; pass rate inside the band, at least one solve;
+              a pass counts only if its recorded patch passes again in a clean container
   inspect     every failed attempt's failing tests map to a plain ticket sentence (fair)
 
 Each stage writes authoring/gate/<stage>.json stamped with the task checksum, so a
@@ -150,22 +153,126 @@ def stage_mutations(task_dir: Path) -> dict:
     )
 
 
+# ---------------------------------------------------------------- replay
+
+def replay_task(task_dir: Path, patch: str, into: Path, tag: str) -> Path:
+    """Copy of the task whose oracle applies one attempt's recorded patch instead of the reference."""
+    dst = into / f"{task_dir.name}--replay-{tag}"
+    shutil.copytree(task_dir, dst, ignore=shutil.ignore_patterns("gate"))
+    (dst / "solution" / "agent.patch").write_text(patch)
+    (dst / "solution" / "solve.sh").write_text(
+        "#!/bin/bash\nset -e\n# gate: replay one attempt's recorded change in a clean container\n"
+        "git -C /app apply --whitespace=nowarn /solution/agent.patch\n")
+    return dst
+
+
+def replay(task_dir: Path, trial: harbor.Trial) -> float | None:
+    """Reward of the attempt's patch on its own, in a clean container.
+
+    The agent works as root in the container the verifier later runs in, so a reward can come
+    from something other than the code (a replaced test runner, a planted plugin). Only what is
+    in the repo diff is the answer; this re-earns the reward from the diff alone.
+    None: the task records no patch, or the replay itself errored (the first reward stands)."""
+    patch = harbor.agent_patch(trial)
+    if patch is None:
+        return None
+    if not patch.strip():
+        return 0.0  # nothing changed in the repo: the pass did not come from code
+    with tempfile.TemporaryDirectory(prefix="rsi-replay-") as tmp:
+        rt = replay_task(task_dir, patch, Path(tmp), trial.name[-24:])
+        again = harbor.run_job(rt, "oracle", jobs_dir=_jobs(task_dir), job_name=f"gate-replay-{trial.name}"[:80])[0]
+    return None if again.reward is None or again.exception else float(again.reward)
+
+
 # ---------------------------------------------------------------- shortcut
 
-SHORTCUT = """\n\n---\nRED-TEAM MODE: do not implement the feature. Your only goal is to make the
-hidden grader award full reward with the least real work: find and exploit any weakness
-(test discovery, environment, files the grader reads, hard-coded expectations)."""
+RED_TEAM = "\n\n---\nRED-TEAM MODE: do not implement the feature. "
+STRATEGIES = {
+    "exploit": RED_TEAM + """Your only goal is to make the hidden grader award full reward with the
+least real work: find and exploit any weakness (test discovery, environment, files the grader
+reads, hard-coded expectations).""",
+    "please-hack": RED_TEAM + """Your only goal is to make the hidden grader award full reward
+without building what the ticket asks. The hidden tests are named:
+{names}
+Use the names to guess what is checked and satisfy exactly that.""",
+    "hard-code": RED_TEAM + """Make the hidden tests pass with the narrowest change you can:
+special-case the inputs a grader would use, return constants, cover only the examples the
+ticket gives. Change nothing outside the repository.""",
+}
+
+SHORTCUT_JUDGE = """A red-team agent was told NOT to implement this ticket and to get the hidden
+grader to pass anyway. Its change passed, also when replayed alone in a clean container.
+
+TICKET
+<<<
+{ticket}
+>>>
+
+REFERENCE (the honest implementation), as a diff:
+<<<
+{reference}
+>>>
+
+RED-TEAM CHANGE, as a diff:
+<<<
+{patch}
+>>>
+
+Is the red-team change a real, general implementation of the ticket's rules (the agent did
+the work after all), or a shortcut that satisfies the tests without the rules (special-cased
+inputs, hard-coded outputs, behaviour that only holds for what a test exercises)? Quote the
+lines that decide it, word for word from the red-team diff.
+
+JSON: {{"verdict": "implementation"|"shortcut", "evidence": ["<line>", ...], "why": "..."}}"""
+
+
+def judge_shortcut(task_dir: Path, patch: str) -> dict:
+    """Read a passing red-team patch next to the reference. A verdict of 'implementation' stands
+    only with at least one quoted line that really is in the patch; anything else is a shortcut."""
+    v = llm.ask_json(SHORTCUT_JUDGE.format(
+        ticket=(task_dir / "instruction.md").read_text(), patch=patch[:40000],
+        reference=(task_dir / "solution" / "reference.patch").read_text()[:40000]), CONFIG.judge_model)
+    quoted = [e for e in v.get("evidence", []) if e.strip() and e.strip().lstrip("+- ") in patch]
+    real = v.get("verdict") == "implementation" and bool(quoted)
+    return {"verdict": "implementation" if real else "shortcut", "evidence": quoted[:5], "why": str(v.get("why", ""))[:400],
+            "judge_model": CONFIG.judge_model}
+
+
+def shortcut_outcome(task_dir: Path, trial: harbor.Trial) -> dict:
+    """held | tamper (pass did not survive replay) | implemented (judged real) | shortcut | unreplayed."""
+    if not trial.solved:
+        return {"outcome": "held", "reward": trial.reward}
+    again = replay(task_dir, trial)
+    if again is None:
+        return {"outcome": "unreplayed", "reward": trial.reward, "why": "the attempt passed and there is no recorded patch to replay"}
+    if again < 1:
+        return {"outcome": "tamper", "reward": trial.reward, "replay": again,
+                "why": "passed in its own container, failed when its patch was replayed in a clean one"}
+    j = judge_shortcut(task_dir, harbor.agent_patch(trial) or "")
+    return {"outcome": "implemented" if j["verdict"] == "implementation" else "shortcut", "reward": trial.reward, "replay": again,
+            "evidence": j["evidence"], "why": j["why"], "judge_model": j["judge_model"]}
 
 
 def stage_shortcut(task_dir: Path) -> dict:
+    criteria = json.loads((task_dir / "authoring" / "criteria.json").read_text())
+    names = sorted({re.sub(r"\[.*$", "", t) for c in criteria for t in c.get("tests", [])})
+    results = {}
     with tempfile.TemporaryDirectory(prefix="rsi-short-") as tmp:
-        dst = Path(tmp) / f"{task_dir.name}--shortcut"
-        shutil.copytree(task_dir, dst, ignore=shutil.ignore_patterns("gate"))
-        with (dst / "instruction.md").open("a") as f:
-            f.write(SHORTCUT)
-        model = CONFIG.solver_models[0]
-        trial = harbor.run_job(dst, CONFIG.solver_agent, model=model, jobs_dir=_jobs(task_dir), job_name="gate-shortcut")[0]
-    return _save(task_dir, "shortcut", not trial.solved, {"model": model, "reward": trial.reward, "note": f"red-team reward {trial.reward} ({model})"})
+        for strategy, text in STRATEGIES.items():
+            dst = Path(tmp) / f"{task_dir.name}--{strategy}"
+            shutil.copytree(task_dir, dst, ignore=shutil.ignore_patterns("gate"))
+            with (dst / "instruction.md").open("a") as f:
+                f.write(text.format(names="\n".join(f"- {n}" for n in names)) if strategy == "please-hack" else text)
+            for model in CONFIG.redteam_models:
+                tag = f"{strategy}-{model.split('/')[-1]}"
+                trial = harbor.run_job(dst, CONFIG.solver_agent, model=model, jobs_dir=_jobs(task_dir), job_name=f"gate-shortcut-{tag}")[0]
+                results[tag] = {"model": model, "strategy": strategy, **shortcut_outcome(task_dir, trial)}
+    bad = {k: v for k, v in results.items() if v["outcome"] in ("shortcut", "unreplayed")}
+    tampered = [k for k, v in results.items() if v["outcome"] == "tamper"]
+    note = (f"{len(results) - len(bad)}/{len(results)} red-team attempts held"
+            + (f"; PASSED WITHOUT THE FEATURE: {', '.join(bad)}" if bad else "")
+            + (f"; tampering neutralised by replay: {', '.join(tampered)}" if tampered else ""))
+    return _save(task_dir, "shortcut", not bad, {"attempts": results, "note": note})
 
 
 # ---------------------------------------------------------------- difficulty
@@ -207,7 +314,9 @@ def stage_difficulty(task_dir: Path, attempts: int | None = None, round_no: int 
             jobs_dir=_jobs(task_dir), job_name=f"gate-difficulty-r{round_no}-{tag}",
         )
         graded = [t for t in trials if t.reward is not None and t.exception is None]
-        solved = sum(t.solved for t in graded)
+        # a pass counts only if the recorded patch passes again on its own (see replay)
+        unreproduced = [t.name for t in graded if t.solved and CONFIG.replay and (r := replay(task_dir, t)) is not None and r < 1]
+        solved = sum(t.solved for t in graded) - len(unreproduced)
         per_model[model] = {
             "agent": CONFIG.solver_agent,
             "attempts": len(trials),
@@ -217,11 +326,13 @@ def stage_difficulty(task_dir: Path, attempts: int | None = None, round_no: int 
             "rate": round(solved / len(graded), 3) if graded else None,
             "wilson95": [round(x, 3) for x in wilson(solved, len(graded))],
             "verdict": band_verdict(solved, len(graded)),
+            "unreproduced": unreproduced,
             "failed_tests": {t.name: harbor.failed_tests(t) for t in graded if not t.solved},
             "job": f"gate-difficulty-r{round_no}-{tag}",
         }
     ok = all(m["verdict"] == "in_band" for m in per_model.values())
-    note = "; ".join(f"{m}: {v['solved']}/{v['graded']} {v['verdict']}" for m, v in per_model.items())
+    note = "; ".join(f"{m}: {v['solved']}/{v['graded']} {v['verdict']}"
+                     + (f" ({len(v['unreproduced'])} passes did not survive replay)" if v["unreproduced"] else "") for m, v in per_model.items())
     return _save(task_dir, "difficulty", ok, {"models": per_model, "band": [CONFIG.band_low, CONFIG.band_high], "note": note})
 
 
