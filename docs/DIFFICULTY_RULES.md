@@ -9,6 +9,9 @@ on a fourth. These rules are what the `combine`, `build` and `calibrate` prompts
   only, graded all-or-nothing on the hidden tests. One failed test is a failed attempt.
 - Target about 25%. In band: pass rate between 15% and 35% with at least one full solve.
   Zero solves is not "very hard", it is unproven: a task nobody solves may be impossible.
+  The gate settles it with hinted attempts: the solver is told every criterion and where
+  builds slip. If it still cannot solve the task, fix the task; never soften it by deleting
+  cases until something passes.
 - Trials that error before grading (gateway 429/503, harness crash) are void, not failures.
 - Small counts mislead: 1 of 4 became 3 of 6 in twenty minutes. The gate uses a Wilson interval
   and asks for more attempts until the interval clears the target.

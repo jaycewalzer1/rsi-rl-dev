@@ -4,7 +4,9 @@
       unfair failures   -> revise: restate or drop those cases, re-measure
       need_more         -> more attempts on the same checksum, counts pooled
       too_easy          -> revise: add a criterion from a fresh failure mode
-      too_hard          -> revise: drop the case family most failed attempts miss
+      too_hard          -> hinted attempts (told every criterion and trap) decide which:
+                             feasible  -> revise: drop the case family most failed attempts miss
+                             unproven  -> revise: fix the tests even hinted attempts all fail
       in_band           -> done
     after every revision: shape, audit, oracle, nop and mutations again before re-measuring
 
@@ -102,6 +104,7 @@ def run(task_dir: Path, modes_path: Path | None = None) -> bool:
         gate.stage_difficulty(task_dir, round_no=rnd)
         diff = _pooled(prev, _difficulty(task_dir), task_dir)
         prev = diff
+        hinted = gate.stage_hinted(task_dir)  # runs only when nobody solved it cold; else a stamp
         insp = gate.stage_inspect(task_dir)
         if insp["unfair_tests"]:
             build.revise(task_dir, insp, "These failing tests are unfair (no plain ticket sentence states them). Restate the ticket sentence or drop the tests.")
@@ -117,9 +120,16 @@ def run(task_dir: Path, modes_path: Path | None = None) -> bool:
             extra = fresh_mode(task_dir, modes_path)
             build.revise(task_dir, diff, f"Too easy. Add ONE new acceptance criterion built on this failure mode, in a different part of the code, with its own hidden cases and mutation: {extra}")
             prev = None
+        elif "too_hard" in verdicts and hinted.get("verdict") == "unproven":
+            build.revise(task_dir, hinted, "Nobody solved this, not even attempts that were told every criterion and where builds slip, "
+                         f"so the task is unproven, not hard. These tests failed in every hinted attempt: {hinted['always_failed'][:40]}. "
+                         "For each, either the ticket does not determine the behaviour (restate its sentence so it does) or the case is "
+                         "wrong (fix or drop it). Do not delete cases just to reach a pass rate.")
+            prev = None
         elif "too_hard" in verdicts:
             fam = hardest_family(task_dir, diff)
-            build.revise(task_dir, diff, f"Too hard (no or almost no full solves). Remove the hidden cases of criterion {fam} that most failed attempts miss, keep its ticket sentence, keep one case so the mutation is still caught.")
+            proof = f" Hinted attempts solved it {hinted['solved']}/{hinted['graded']}, so it is possible and the ticket is enough." if hinted.get("solved") else ""
+            build.revise(task_dir, diff, f"Too hard (no or almost no full solves).{proof} Remove the hidden cases of criterion {fam} that most failed attempts miss, keep its ticket sentence, keep one case so the mutation is still caught.")
             prev = None
         # need_more: loop again with the same checksum, counts pool
     diff = _difficulty(task_dir)

@@ -41,6 +41,10 @@ class Config:
     band_high: float = float(_env("RSI_BAND_HIGH", "0.35"))
     attempts: int = int(_env("RSI_ATTEMPTS", "8"))
     max_calibration_rounds: int = int(_env("RSI_MAX_ROUNDS", "4"))
+    # hinted attempts: the solver is told every criterion and where builds usually slip. Run
+    # when no cold attempt solved the task ("auto"), on every measurement ("always"), or never ("off")
+    hinted: str = _env("RSI_HINTED", "auto")
+    hinted_attempts: int = int(_env("RSI_HINTED_ATTEMPTS", "4"))
 
     # harbor command; default assumes `uv tool install harbor`
     harbor_cmd: tuple[str, ...] = tuple(shlex.split(_env("RSI_HARBOR", "harbor")))

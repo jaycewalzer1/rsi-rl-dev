@@ -12,6 +12,8 @@ Stages, in order, stopping at the first hard failure:
               real implementation next to the reference
   difficulty  K cold attempts per solver model; pass rate inside the band, at least one solve;
               a pass counts only if its recorded patch passes again in a clean container
+  hinted      when no cold attempt solves it: attempts that are told every criterion and
+              where builds slip. A solve proves the task possible; none means unproven
   inspect     every failed attempt's failing tests map to a plain ticket sentence (fair)
 
 Each stage writes authoring/gate/<stage>.json stamped with the task checksum, so a
@@ -32,9 +34,9 @@ from pathlib import Path
 from . import audit, harbor, llm
 from .config import CONFIG
 
-STAGES = ["shape", "audit", "oracle", "nop", "mutations", "shortcut", "difficulty", "inspect"]
+STAGES = ["shape", "audit", "oracle", "nop", "mutations", "shortcut", "difficulty", "hinted", "inspect"]
 PRE_MEASURE = ["shape", "audit", "oracle", "nop", "mutations"]  # must pass before any solver attempt is spent
-MODEL_STAGES = {"shortcut", "difficulty", "inspect"}
+MODEL_STAGES = {"shortcut", "difficulty", "hinted", "inspect"}
 
 
 def checksum(task_dir: Path) -> str:
@@ -304,6 +306,17 @@ def band_verdict(solved: int, graded: int) -> str:
     return "need_more"
 
 
+def _tally(task_dir: Path, trials: list[harbor.Trial]) -> dict:
+    """Counts for one batch of attempts. Errored trials are void; a pass counts only if the
+    recorded patch passes again on its own (see replay)."""
+    graded = [t for t in trials if t.reward is not None and t.exception is None]
+    unreproduced = [t.name for t in graded if t.solved and CONFIG.replay and (r := replay(task_dir, t)) is not None and r < 1]
+    solved = sum(t.solved for t in graded) - len(unreproduced)
+    return {"attempts": len(trials), "graded": len(graded), "voided": len(trials) - len(graded), "solved": solved,
+            "rate": round(solved / len(graded), 3) if graded else None, "unreproduced": unreproduced,
+            "failed_tests": {t.name: harbor.failed_tests(t) for t in graded if not t.solved}}
+
+
 def stage_difficulty(task_dir: Path, attempts: int | None = None, round_no: int = 0) -> dict:
     attempts = attempts or CONFIG.attempts
     per_model = {}
@@ -313,27 +326,86 @@ def stage_difficulty(task_dir: Path, attempts: int | None = None, round_no: int 
             task_dir, CONFIG.solver_agent, model=model, attempts=attempts,
             jobs_dir=_jobs(task_dir), job_name=f"gate-difficulty-r{round_no}-{tag}",
         )
-        graded = [t for t in trials if t.reward is not None and t.exception is None]
-        # a pass counts only if the recorded patch passes again on its own (see replay)
-        unreproduced = [t.name for t in graded if t.solved and CONFIG.replay and (r := replay(task_dir, t)) is not None and r < 1]
-        solved = sum(t.solved for t in graded) - len(unreproduced)
+        tally = _tally(task_dir, trials)
         per_model[model] = {
             "agent": CONFIG.solver_agent,
-            "attempts": len(trials),
-            "graded": len(graded),
-            "voided": len(trials) - len(graded),
-            "solved": solved,
-            "rate": round(solved / len(graded), 3) if graded else None,
-            "wilson95": [round(x, 3) for x in wilson(solved, len(graded))],
-            "verdict": band_verdict(solved, len(graded)),
-            "unreproduced": unreproduced,
-            "failed_tests": {t.name: harbor.failed_tests(t) for t in graded if not t.solved},
+            **tally,
+            "wilson95": [round(x, 3) for x in wilson(tally["solved"], tally["graded"])],
+            "verdict": band_verdict(tally["solved"], tally["graded"]),
             "job": f"gate-difficulty-r{round_no}-{tag}",
         }
     ok = all(m["verdict"] == "in_band" for m in per_model.values())
     note = "; ".join(f"{m}: {v['solved']}/{v['graded']} {v['verdict']}"
                      + (f" ({len(v['unreproduced'])} passes did not survive replay)" if v["unreproduced"] else "") for m, v in per_model.items())
     return _save(task_dir, "difficulty", ok, {"models": per_model, "band": [CONFIG.band_low, CONFIG.band_high], "note": note})
+
+
+# ---------------------------------------------------------------- hinted
+
+HINT = """
+
+---
+REVIEWER NOTES (privileged: a cold solver never sees this part)
+The hidden tests check each of these, separately:
+{criteria}
+{traps}"""
+
+
+def hint_text(task_dir: Path) -> str:
+    """Every criterion, plus where the textbook build slips if the design recorded it. No test code."""
+    criteria = json.loads((task_dir / "authoring" / "criteria.json").read_text())
+    design_path = task_dir / "authoring" / "design.json"
+    design = json.loads(design_path.read_text()) if design_path.exists() else {}
+    traps = [f"- the usual build ({tb.get('build', '?')}) fails on: {tb.get('hidden_case_it_fails', '?')}"
+             for tb in (design.get("textbook_build") or {}).values() if isinstance(tb, dict)]
+    if design.get("central_change_risk"):
+        traps.append(f"- no single change covers it: {design['central_change_risk']}")
+    return HINT.format(criteria="\n".join(f"- {c['id']}: {c.get('sentence') or c.get('text', '')}" for c in criteria),
+                       traps=("Where builds usually slip:\n" + "\n".join(traps)) if traps else "Builds usually satisfy most of these and drop one.")
+
+
+def design_score(p_cold: float, p_hint: float | None) -> dict:
+    """SPADE's designer reward, with this repo's band as the anchor: 0.4 x regret (how much the
+    hint helps, floored at 0) + 0.6 x closeness of the cold pass rate to the target."""
+    regret = None if p_hint is None else round(max(0.0, p_hint - p_cold), 3)
+    anchor = max(0.0, 1 - abs(p_cold - CONFIG.target_rate) / max(CONFIG.target_rate, 1 - CONFIG.target_rate))
+    return {"regret": regret, "anchor": round(anchor, 3), "score": round(0.4 * (regret or 0.0) + 0.6 * anchor, 3)}
+
+
+def stage_hinted(task_dir: Path, attempts: int | None = None) -> dict:
+    """The feasibility proof for a task nobody solved cold.
+
+    hinted solves it   -> feasible: hard, and the hint closes the gap (high regret)
+    hinted fails too   -> unproven: possibly impossible or underspecified; do not ship it
+    Hinted attempts never count toward the pass rate."""
+    path = task_dir / "authoring" / "gate" / "hinted.json"
+    if path.exists() and (old := json.loads(path.read_text())).get("checksum") == checksum(task_dir) and old.get("graded"):
+        return old  # same task, already measured
+    cold = json.loads((task_dir / "authoring" / "gate" / "difficulty.json").read_text())["models"]
+    cold_solved, cold_graded = sum(m["solved"] for m in cold.values()), sum(m["graded"] for m in cold.values())
+    p_cold = cold_solved / cold_graded if cold_graded else 0.0
+    if CONFIG.hinted == "off" or (CONFIG.hinted == "auto" and (cold_solved > 0 or cold_graded < 6)):
+        why = "a cold solve already proves the task can be done" if cold_solved else "waiting for more cold attempts" if CONFIG.hinted != "off" else "RSI_HINTED=off"
+        return _save(task_dir, "hinted", True, {"skipped": True, **design_score(p_cold, None), "note": f"skipped: {why}"})
+
+    model = CONFIG.solver_models[0]
+    with tempfile.TemporaryDirectory(prefix="rsi-hint-") as tmp:
+        dst = Path(tmp) / f"{task_dir.name}--hinted"
+        shutil.copytree(task_dir, dst, ignore=shutil.ignore_patterns("gate"))
+        with (dst / "instruction.md").open("a") as f:
+            f.write(hint_text(task_dir))
+        trials = harbor.run_job(dst, CONFIG.solver_agent, model=model, attempts=attempts or CONFIG.hinted_attempts,
+                                jobs_dir=_jobs(task_dir), job_name=f"gate-hinted-{model.split('/')[-1]}")
+    tally = _tally(task_dir, trials)
+    failed = list(tally["failed_tests"].values())
+    always = sorted(set.intersection(*map(set, failed))) if failed and not tally["solved"] else []
+    verdict = "feasible" if tally["solved"] else "need_more" if tally["graded"] < 2 else "unproven"
+    note = {"feasible": f"feasible: hinted {tally['solved']}/{tally['graded']} against cold {cold_solved}/{cold_graded}",
+            "unproven": f"UNPROVEN: 0/{tally['graded']} even with every criterion and trap spelled out; {len(always)} tests failed every time",
+            "need_more": "hinted attempts errored; run again"}[verdict]
+    return _save(task_dir, "hinted", verdict == "feasible", {
+        "model": model, "agent": CONFIG.solver_agent, **tally, "cold": {"solved": cold_solved, "graded": cold_graded},
+        "verdict": verdict, "always_failed": always, **design_score(p_cold, tally["rate"]), "note": note})
 
 
 # ---------------------------------------------------------------- inspect
@@ -384,7 +456,7 @@ def stage_inspect(task_dir: Path) -> dict:
 RUNNERS = {
     "shape": stage_shape, "audit": stage_audit, "oracle": stage_oracle, "nop": stage_nop,
     "mutations": stage_mutations, "shortcut": stage_shortcut,
-    "difficulty": stage_difficulty, "inspect": stage_inspect,
+    "difficulty": stage_difficulty, "hinted": stage_hinted, "inspect": stage_inspect,
 }
 
 

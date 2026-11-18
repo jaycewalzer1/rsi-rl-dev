@@ -105,3 +105,35 @@ replay by design.
 
 **Status.** Built. `tests/test_redteam.py` fakes Harbor and the judge and checks every
 outcome. Not yet run under Harbor.
+
+## 4. Feasibility: the hint gap
+
+**The work.** In SPADE (arXiv:2608.19197) one model writes environments and solves them.
+The designer also writes a privileged hint, the solver plays each environment with and
+without it, and the designer is rewarded on the gap (regret, floored at zero) plus an anchor
+that favours a mid-range win rate; the paper's overview gives the weights as 0.4 and 0.6.
+The reading of the gap is the useful part: a large gap means solvable with guidance but not
+yet alone; success both ways means mastered; failure both ways means intractable.
+
+**The weakness it fixes here.** `docs/DIFFICULTY_RULES.md` already said "zero solves is not
+very hard, it is unproven", and the calibration loop then softened the task anyway by
+deleting the cases most attempts missed. That cannot tell a hard task from a broken one.
+
+**What this repo does.** The `hinted` stage runs when no cold attempt solved the task (at
+least 6 graded). The solver gets the ticket plus reviewer notes: every criterion, and where
+the textbook build slips if the design recorded it. No test code.
+- a hinted solve: feasible. Calibration softens the task as before, and says so
+- no hinted solve: unproven. Calibration sends back the tests every hinted attempt failed,
+  with the instruction to restate the ticket or fix the cases, not to delete cases until
+  something passes
+
+`gate.design_score` records regret, the band anchor and their 0.4/0.6 mix for each task.
+Hinted attempts never count toward the pass rate.
+
+**Left out.** SPADE trains its designer on this reward. Here the designer is a frozen
+frontier model, so the score is only recorded. A hinted solve proves the task is possible
+for a solver that was told where the traps are; whether the ticket alone is enough is the
+inspect stage's question. SPADE itself notes that a hint can mislead and that regret is an
+estimate.
+
+**Status.** Built. `tests/test_hinted.py`, Harbor faked. Not yet run under Harbor.

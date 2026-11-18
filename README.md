@@ -33,7 +33,8 @@ starting history and the author model's worked examples.
                                  ▼
                              calibrate
               too easy  → add a criterion from a fresh failure mode
-              too hard  → drop the case family most attempts miss
+              too hard  → hinted attempts decide: possible → drop the case family most
+                          attempts miss; unproven → fix the tests nobody passed
               unfair    → restate the ticket sentence or drop the cases
               in band   → record mode slips in history, done
 ```
@@ -88,6 +89,7 @@ writes `authoring/gate/<stage>.json` stamped with the task checksum.
 | mutations | every `authoring/mutations/*.patch` applied on top of the reference scores 0, with failing tests reported by assertion |
 | shortcut | three red-team attempts per model (exploit the grader; the same with the hidden test names; hard-code the narrowest pass) score 0. A pass is replayed in a clean container: if it dies there it was tampering (logged, neutralised); if it survives, the judge reads it next to the reference and only a real implementation clears it |
 | difficulty | K cold attempts per solver model; pass rate in the band with at least one full solve (Wilson interval, errored trials void). A pass counts only if its recorded patch passes again in a clean container |
+| hinted | only when no cold attempt solved it: attempts that are told every criterion and where builds slip. A solve proves the task possible; none means unproven, and calibration fixes the tests instead of deleting cases |
 | inspect | every failing test of every failed attempt maps to a ticket sentence quoted word for word |
 
 ## Business data in, a measured Qwen improvement out
@@ -171,6 +173,7 @@ All settings are environment variables (see `rsi/config.py`):
 | `RSI_TARGET_RATE` / `RSI_BAND_LOW` / `RSI_BAND_HIGH` | `0.25` / `0.15` / `0.35` |
 | `RSI_ATTEMPTS` | `8` cold attempts per model per round |
 | `RSI_MAX_ROUNDS` | `4` calibration rounds |
+| `RSI_HINTED`, `RSI_HINTED_ATTEMPTS` | `auto` (hinted attempts only when nobody solved it cold; `always`, `off`), `4` |
 | `RSI_HARBOR`, `RSI_HARBOR_ENV` | `harbor`, `docker` |
 | `RSI_LLM` | `cli` (headless `claude -p`) or `api` (Messages API with `ANTHROPIC_API_KEY`) |
 
