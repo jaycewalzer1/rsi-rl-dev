@@ -341,3 +341,43 @@ had the same problem and the levels need moving, not the algorithm.
 **Status.** Built; pure functions tested in `tests/test_qwen_arms.py`. No Qwen run has been
 done on this branch (it needs the Mac, MLX and the weights), and there is still no REPORT.md
 in the repo.
+
+## 10. The improvement loop: the scaffold is what gets better
+
+**The work.** The Darwin Gödel Machine (ICLR 2026, arXiv:2505.22954) keeps an archive of
+coding agents, lets an agent rewrite its own code, and validates each change empirically on
+benchmarks; with frozen foundation models it took SWE-bench from 20.0% to 50.0%. HyperAgents
+(arXiv:2603.19461) merges the task agent and the meta agent into one editable program so
+the improvement procedure is itself editable, keeps parent selection and the evaluation
+protocol fixed, runs changes in sandboxes under human oversight, and evaluates in stages (a
+small subset first, the full set only for survivors). SPADE and EvoEnv (sections 4, 5, 7)
+take the other road and train the model that writes the environments.
+
+**What was here.** The README called a bandit over failure modes "the self-improving part".
+Nothing in the repo changed the repo.
+
+**What this repo does.** `rsi improve` (`rsi/improve.py`, `rsi/proposer.py`,
+`rsi/meter.py`; `docs/RSI_LOOP.md` is the full description):
+- a headless Claude Code session, in a git worktree on its own branch, makes one change to
+  the factory and writes down its evidence, its prediction and what would prove it wrong
+- a fixed shell checks it: protected paths untouched, no line reaching around them, the
+  note complete, the test suite green, the design policy's prediction error not worse
+- optionally, parent and candidate each run N tasks and the scorecard decides
+- every generation is archived and shown to the next one
+
+Taken from the papers: empirical validation instead of argument (DGM); an editable
+meta-level inside a fixed evaluation (HyperAgents: `proposer.py` is open, the shell is
+not); staged evaluation, cheap checks before expensive ones (HyperAgents); a written
+hypothesis per change that later generations can read (HyperAgents reports its agents
+inventing persistent memory and performance tracking for themselves; here they are given).
+
+**Why the scaffold and not the author model.** `docs/WHY_NOT_TRAIN_THE_AUTHOR.md`.
+
+**Left out.** A population: DGM samples parents from its archive so stepping stones are not
+lost; this loop has one parent at a time and `--parent` for branching by hand. Sandboxing
+beyond Claude Code's own permission rules. Any result.
+
+**Status.** Built. `tests/test_improve.py` runs whole generations in a throwaway git
+repository with the session faked, including each way a generation gets rejected. The
+Claude Code flags the session uses were checked to parse on Claude Code 2.1.327. No real
+generation has been run: there are no measured tasks in this checkout to reason from.

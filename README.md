@@ -98,6 +98,22 @@ writes `authoring/gate/<stage>.json` stamped with the task checksum.
 | hinted | only when no cold attempt solved it: attempts that are told every criterion and where builds slip. A solve proves the task possible; none means unproven, and calibration fixes the tests instead of deleting cases |
 | inspect | every failing test of every failed attempt maps to a ticket sentence quoted word for word (the quote is string-matched against the ticket). Each distinct failure is reviewed three times and one "unfair" is enough; tests every attempt failed in its own way, or every hinted attempt failed, are flagged for the judge |
 
+## The improvement loop
+
+The loop above tunes what it stacks. `rsi improve` changes the factory itself: a headless
+Claude Code session edits the code and prompts in a git worktree, and a part of the repo it
+cannot edit (the gate, the scorecard, the existing tests) decides whether the change stays.
+
+```bash
+uv run rsi score                          # in-band tasks per 100 attempts, and the guardrails
+uv run rsi improve                        # one generation: propose, check, commit on rsi/gen-N
+uv run rsi improve --live 4               # also run parent and candidate on 4 tasks each
+uv run rsi improve --log
+```
+
+[`docs/RSI_LOOP.md`](docs/RSI_LOOP.md) has the steps, the protected list and what counts
+as evidence. No generation has been run yet.
+
 ## Business data in, a measured Qwen improvement out
 
 `rsi factory` takes a company's data export and produces proven task families and Harbor

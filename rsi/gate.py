@@ -347,6 +347,28 @@ def stage_difficulty(task_dir: Path, attempts: int | None = None, round_no: int 
     return out
 
 
+def pool_difficulty(task_dir: Path, prev: dict | None, new: dict) -> dict:
+    """Pool a new difficulty measurement with the previous one when the task did not change
+    in between (same checksum), and rewrite difficulty.json with the pooled counts."""
+    if not prev or prev["checksum"] != new["checksum"]:
+        return new
+    for model, cur in new["models"].items():
+        old = prev["models"].get(model)
+        if not old:
+            continue
+        for k in ("graded", "solved", "attempts", "voided"):
+            cur[k] += old[k]
+        cur["failed_tests"] = {**old["failed_tests"], **cur["failed_tests"]}
+        cur["unreproduced"] = old.get("unreproduced", []) + cur.get("unreproduced", [])
+        cur["failure_messages"] = {**old.get("failure_messages", {}), **cur.get("failure_messages", {})}
+        cur["rate"] = round(cur["solved"] / cur["graded"], 3) if cur["graded"] else None
+        cur["wilson95"] = [round(x, 3) for x in wilson(cur["solved"], cur["graded"])]
+        cur["verdict"] = band_verdict(cur["solved"], cur["graded"])
+    new["ok"] = all(m["verdict"] == "in_band" for m in new["models"].values())
+    (task_dir / "authoring" / "gate" / "difficulty.json").write_text(json.dumps(new, indent=2))
+    return new
+
+
 # ---------------------------------------------------------------- hinted
 
 HINT = """

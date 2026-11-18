@@ -29,10 +29,15 @@ def ask(
     model: str,
     *,
     tools: list[str] | None = None,
+    allowed: list[str] | None = None,
     cwd: Path | None = None,
     timeout: int = 1800,
+    budget_usd: float | None = None,
 ) -> str:
-    """Return the model's final text. `tools` enables Claude Code tools (CLI backend only)."""
+    """Return the model's final text. `tools` enables Claude Code tools (CLI backend only).
+    `allowed` narrows what those tools may do without asking, as Claude Code permission rules
+    (e.g. "Bash(uv run pytest *)"); by default every listed tool is allowed outright.
+    `budget_usd` caps what one session may spend."""
     backend = os.environ.get("RSI_LLM", "cli")
     started = time.time()
     if backend == "api":
@@ -40,7 +45,7 @@ def ask(
             raise ValueError("tool use needs the cli backend (RSI_LLM=cli)")
         text = _ask_api(prompt, model, timeout)
     else:
-        text = _ask_cli(prompt, model, tools, cwd, timeout)
+        text = _ask_cli(prompt, model, tools, cwd, timeout, allowed, budget_usd)
     _log(
         {
             "backend": backend,
@@ -54,13 +59,21 @@ def ask(
     return text
 
 
-def _ask_cli(prompt, model, tools, cwd, timeout) -> str:
+def cli_command(model, tools=None, allowed=None, budget_usd=None) -> list[str]:
     cmd = ["claude", "-p", "--model", model, "--output-format", "json"]
     if tools:
-        cmd += ["--tools", ",".join(tools), "--allowedTools", ",".join(tools)]
+        cmd += ["--tools", ",".join(tools)]
+        cmd += ["--allowedTools", *allowed] if allowed else ["--allowedTools", ",".join(tools)]
         cmd += ["--permission-mode", "acceptEdits"]
     else:
         cmd += ["--tools", ""]
+    if budget_usd:
+        cmd += ["--max-budget-usd", str(budget_usd)]
+    return cmd
+
+
+def _ask_cli(prompt, model, tools, cwd, timeout, allowed=None, budget_usd=None) -> str:
+    cmd = cli_command(model, tools, allowed, budget_usd)
     proc = subprocess.run(
         cmd, input=prompt, capture_output=True, text=True, cwd=cwd, timeout=timeout
     )

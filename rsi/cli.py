@@ -15,6 +15,12 @@
                                           measure the active tasks again with today's solvers;
                                           retire the ones that have become too easy
 
+  rsi score    [RUN ...]                  the factory's scorecard, from gate output (rsi/meter.py)
+  rsi improve  [--live N] [--adopt] [--parent REF] [--budget USD] [--force] | --log
+                                          one generation of the improvement loop: Claude Code
+                                          changes the factory in a worktree; the checks and,
+                                          with --live, a parent-vs-candidate run decide
+
   rsi factory  --run NAME --business DIR [--modes-from RUN] [--families 3] [--only STAGES]
                                           business data in, proven task families and Harbor tasks out:
                                           intake, scan + papers, author agents, export, gate
@@ -82,6 +88,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("task_dir", type=Path, nargs="?")
     p.add_argument("--promote", action="store_true")
     sub.add_parser("pool")
+    p = sub.add_parser("score")
+    p.add_argument("runs", nargs="*", help="run names under runs/ (default: every run that has tasks)")
+    p = sub.add_parser("improve")
+    p.add_argument("--live", type=int, default=0, metavar="N", help="also run N tasks with the parent and N with the candidate, and let the scorecard decide")
+    p.add_argument("--adopt", action="store_true", help="fast-forward the current branch to a generation the live comparison accepted")
+    p.add_argument("--parent", default="HEAD", help="the commit the generation starts from")
+    p.add_argument("--budget", type=float, help="spending cap in USD for the proposing session")
+    p.add_argument("--force", action="store_true", help="propose even with fewer than 3 measured tasks")
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--log", action="store_true", help="list the generations so far")
     p = sub.add_parser("recheck")
     p.add_argument("--task", action="append", help="only this task (repeatable); default: every active task")
     p.add_argument("--attempts", type=int)
@@ -98,6 +114,18 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if a.cmd == "pool":
         print(archive.listing())
+        return 0
+    if a.cmd == "score":
+        from . import meter, proposer
+        dirs = [CONFIG.runs_dir / r for r in a.runs] or proposer.run_dirs(CONFIG.runs_dir)
+        print(meter.render(meter.scorecard(dirs)))
+        return 0
+    if a.cmd == "improve":
+        from . import improve
+        if a.log:
+            print(improve.log())
+            return 0
+        improve.run(a.parent, live_tasks=a.live, adopt=a.adopt, budget_usd=a.budget, force=a.force, seed=a.seed)
         return 0
     if a.cmd == "recheck":
         archive.recheck(a.task, a.attempts)

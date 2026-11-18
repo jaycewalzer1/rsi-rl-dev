@@ -35,25 +35,7 @@ def _difficulty(task_dir: Path) -> dict:
 
 def _pooled(prev: dict | None, new: dict, task_dir: Path) -> dict:
     """Pool attempt counts with the previous measurement when the task did not change."""
-    if not prev or prev["checksum"] != new["checksum"]:
-        return new
-    for model, cur in new["models"].items():
-        old = prev["models"].get(model)
-        if not old:
-            continue
-        cur["graded"] += old["graded"]
-        cur["solved"] += old["solved"]
-        cur["attempts"] += old["attempts"]
-        cur["voided"] += old["voided"]
-        cur["failed_tests"] = {**old["failed_tests"], **cur["failed_tests"]}
-        cur["unreproduced"] = old.get("unreproduced", []) + cur.get("unreproduced", [])
-        cur["failure_messages"] = {**old.get("failure_messages", {}), **cur.get("failure_messages", {})}
-        cur["rate"] = round(cur["solved"] / cur["graded"], 3) if cur["graded"] else None
-        cur["wilson95"] = [round(x, 3) for x in gate.wilson(cur["solved"], cur["graded"])]
-        cur["verdict"] = gate.band_verdict(cur["solved"], cur["graded"])
-    new["ok"] = all(m["verdict"] == "in_band" for m in new["models"].values())
-    (task_dir / "authoring" / "gate" / "difficulty.json").write_text(json.dumps(new, indent=2))
-    return new
+    return gate.pool_difficulty(task_dir, prev, new)
 
 
 def mode_slips(task_dir: Path, diff: dict) -> dict[str, int]:
