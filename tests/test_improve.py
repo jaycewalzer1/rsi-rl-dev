@@ -28,7 +28,7 @@ def test_the_real_protected_files_exist():
     """A protected path that names nothing protects nothing."""
     root = Path(improve.__file__).resolve().parent.parent
     for p in improve.PROTECTED:
-        assert list(root.glob(p)) or p == "docs/WHY_NOT_TRAIN_THE_AUTHOR.md" and (root / "docs").exists(), p
+        assert list(root.glob(p)), p
 
 
 def diff(path, *added):
