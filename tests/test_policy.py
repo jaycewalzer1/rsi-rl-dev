@@ -3,7 +3,6 @@
 import json
 import random
 from collections import Counter
-from pathlib import Path
 
 import pytest
 

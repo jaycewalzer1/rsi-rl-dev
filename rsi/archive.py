@@ -24,7 +24,6 @@ import time
 from collections import Counter
 from pathlib import Path
 
-from .config import CONFIG
 from .store import read_jsonl
 
 ARCHIVE = Path("runs/archive.jsonl")

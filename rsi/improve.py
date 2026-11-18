@@ -38,7 +38,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from . import combine, meter, proposer
+from . import archive, combine, meter, mine, proposer
 from .config import CONFIG
 from .store import read_jsonl, write_json
 
@@ -160,9 +160,9 @@ def live(gen_dir: Path, parent_tree: Path, tree: Path, tasks: int, seed: int) ->
     for arm, code in (("parent", parent_tree), ("candidate", tree)):
         cwd = gen_dir / f"live-{arm}"
         (cwd / "runs").mkdir(parents=True, exist_ok=True)
-        for name in ("history.jsonl", "archive.jsonl", "mined.jsonl", "mined_modes.json"):
-            if (CONFIG.runs_dir / name).exists():
-                shutil.copy(CONFIG.runs_dir / name, cwd / "runs" / name)
+        for src in (combine.HISTORY, archive.ARCHIVE, mine.MINED, mine.MODES):  # both arms start from what is known today
+            if src.exists():
+                shutil.copy(src, cwd / "runs" / src.name)
         env = {**os.environ, "RSI_RUNS_DIR": "runs", "RSI_LLM_LOG": "runs/llm_calls.jsonl"}
         cmd = ["uv", "run", "--project", str(code), "rsi", "loop", "--run", "live", "--tasks", str(tasks), "--seed", str(seed), "--skip-scan"]
         print(f"improve: live arm {arm}: {' '.join(cmd)}  (in {cwd})", flush=True)

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from rsi import archive, calibrate, combine, gate, llm
+from rsi import archive, combine, gate, llm
 
 ROOT = Path(__file__).resolve().parent.parent
 SMOKE = ROOT / "examples" / "tasks" / "smoke-ledger"

@@ -157,6 +157,7 @@ def promote(known: list[dict], min_support: int = 2) -> list[dict]:
     new and at least `min_support` different attempts show it."""
     slips = [r for r in read_jsonl(MINED) if r["kind"] == "other"]
     if len({(r["task"], r["trial"]) for r in slips}) < min_support:
+        print(f"mine: nothing to promote: {len(slips)} undocumented slips on file, and a mode needs {min_support} attempts")
         return []
     listing = "\n".join(f"[{i}] {r['other']['id']}: {r['other'].get('mode', '')} (what happened: {r['slip']})" for i, r in enumerate(slips))
     groups = llm.ask_json(GROUP.format(known="\n".join(f"- {m['id']}: {m['mode'][:200]}" for m in known), slips=listing), CONFIG.judge_model)

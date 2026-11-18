@@ -1,7 +1,5 @@
 import json
 
-import pytest
-
 from rsi import business_gen, events, family as F, family_check, gate, intake, scan_hn
 from rsi.qwen import SETS, choose_levels, compare, markdown, mcnemar, rate, train_plan
 
