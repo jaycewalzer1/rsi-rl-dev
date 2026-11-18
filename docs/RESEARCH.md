@@ -167,3 +167,56 @@ is thin. The 47% to 87% figures are EvoEnv's, for a 4B reviewer on generated puz
 judge here is a frontier model on tickets, and nobody has measured its review accuracy.
 
 **Status.** Built. `tests/test_inspect.py`, judge faked. Not yet run with a real judge.
+
+## 6. The design policy: aim at a pass rate, with stacked modes
+
+**The work.** Three lines of work say the same thing from different sides.
+- Curriculum design: Sampling for Learnability (Rutherford et al., NeurIPS 2024,
+  arXiv:2408.15099) shows that regret-style scores in practice track success rate, and that
+  scoring levels by p(1-p), the ones solved sometimes and not always, works better. A 2026
+  survey post on environment scaling puts it as "difficulty and training value are simply
+  different axes": with a binary reward the variance p(1-p) is the signal a group-relative
+  method like GRPO can use, and it is zero at both ends.
+- Psychometrics: work on agentic coding benchmarks fits item response models to predict
+  per-task success before running agents (Agent Psychometrics, arXiv:2604.00594), and a
+  mid-range filter (keep tasks with 30 to 70% pass rate, arXiv:2603.23749) cuts evaluation
+  cost because mid-range items carry the information.
+- Composition: Skill-Mix (arXiv:2310.17567) makes hard, unseen tasks by combining k skills
+  from a list, with k as the difficulty dial.
+
+**What was here.** A per-mode bandit: sample a slip rate per failure mode, take the top
+three. Three problems. It aimed at the most slips, when the target is a band. It treated
+modes as independent, while the hackathon finding was that the stack matters. And it had a
+bug: a mode got an update only if it appeared in `mode_slips`, so a mode that never slipped
+(idempotency, 0 in 15) was never marked as handled and its "handicap" did not exist.
+
+**What this repo does now.** `rsi/combine.py`:
+- `stats`: per mode, attempts slipped and attempts handled, counting every mode in the task
+  (the bug fix). History measured with a solver outside `RSI_SOLVER_MODELS` counts at
+  `RSI_STALE_WEIGHT` (0.25): a newer model handles more.
+- `predict`: P(solve a stack) = product of handle rates x pair interactions. An interaction
+  is estimated only from rows that record which modes slipped in the same attempt, and is
+  shrunk toward 1 (independent).
+- `pick_modes`: Thompson-samples the handle rates and takes the stack of 3 to
+  `RSI_MAX_MODES` modes whose predicted pass rate is nearest the target, with a small
+  penalty for a stack where one mode carries everything.
+- `calibrate.record` writes, per solver, which modes slipped together in each attempt, the
+  rate the design predicted, and the rate its first measurement gave.
+- `backtest`: leave-one-task-out error of the prediction, next to a baseline that predicts
+  the mean pass rate.
+
+**Evidence, for and against.** On the six hackathon tasks the model's leave-one-out error is
+0.206 against 0.208 for the baseline. That is a tie. Six tasks with 3 to 6 attempts each
+cannot show the product model predicts anything, and the pair term has no data at all yet
+(the hackathon rows have no per-attempt patterns). What the fit does reproduce is the
+qualitative finding: authorization parity is handled 10 of 10 on its own, derived surfaces 6
+of 12, and the in-band tasks stacked both.
+
+**Next test.** After about 20 more calibrated tasks, `combine.backtest()` again. If the model
+still does not beat the baseline, the stacking claim is a recipe for writing tasks, not a
+predictive model, and `pick_modes` should go back to something simpler.
+
+**Left out.** No learned item-response model (too few solvers and tasks to fit one). No
+difficulty prediction from the ticket text.
+
+**Status.** Built. `tests/test_policy.py`.

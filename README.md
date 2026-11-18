@@ -39,10 +39,12 @@ starting history and the author model's worked examples.
               in band   → record mode slips in history, done
 ```
 
-The self-improving part: every calibrated task writes which failure modes made solvers fail into
-`runs/history.jsonl`. `combine` samples modes from a Beta posterior over those slips, so the next
-design leans on modes that actually work against current models, and drops the ones they have
-learned to handle.
+The feedback inside the loop: every calibrated task writes to `runs/history.jsonl` which failure
+modes each solver slipped on, and which slipped together in one attempt. `combine` fits a small
+model to that (a task is solved when every stacked mode is handled: product of handle rates,
+times pair interactions) and picks the stack whose predicted pass rate is nearest the target.
+On six hackathon tasks that model does not yet beat predicting the mean (docs/RESEARCH.md §6);
+`combine.backtest()` is how to check again as history grows.
 
 ## Quick start
 
@@ -175,6 +177,8 @@ All settings are environment variables (see `rsi/config.py`):
 | `RSI_MAX_ROUNDS` | `4` calibration rounds |
 | `RSI_INSPECT_REVIEWS` | `3` independent fairness reviews per distinct failure; one "unfair" is enough |
 | `RSI_HINTED`, `RSI_HINTED_ATTEMPTS` | `auto` (hinted attempts only when nobody solved it cold; `always`, `off`), `4` |
+| `RSI_MIN_MODES` / `RSI_MAX_MODES` | `3` / `4` failure modes stacked per design |
+| `RSI_STALE_WEIGHT` | `0.25`: weight of history measured with a solver that is not in `RSI_SOLVER_MODELS` |
 | `RSI_HARBOR`, `RSI_HARBOR_ENV` | `harbor`, `docker` |
 | `RSI_LLM` | `cli` (headless `claude -p`) or `api` (Messages API with `ANTHROPIC_API_KEY`) |
 

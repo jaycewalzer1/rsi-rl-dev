@@ -10,22 +10,23 @@
       in_band           -> done
     after every revision: shape, audit, oracle, nop and mutations again before re-measuring
 
-Every finished task appends to runs/history.jsonl which modes made solvers slip.
-combine.py reads that file, so the next design leans on modes that work. That
-feedback is the self-improving part of the loop.
+Every finished task appends a row to runs/history.jsonl: per solver model, how many attempts
+slipped on each mode and which modes slipped together in one attempt, plus the pass rate the
+design predicted and the one its first measurement gave. combine.py fits its stacking model
+to those rows, so the next design is aimed with what the last ones measured.
 """
 
 from __future__ import annotations
 
 import json
 import random
+import time
 from collections import Counter
 from pathlib import Path
 
-from . import build, gate
-from .combine import HISTORY, pick_modes
+from . import build, combine, gate
 from .config import CONFIG
-from .store import read_json
+from .store import read_json, read_jsonl
 
 
 def _difficulty(task_dir: Path) -> dict:
@@ -77,22 +78,54 @@ def hardest_family(task_dir: Path, diff: dict) -> str:
     return hits.most_common(1)[0][0] if hits else "?"
 
 
-def record(task_dir: Path, diff: dict, rounds: int) -> None:
+def slip_patterns(task_dir: Path, model_result: dict) -> dict:
+    """Per graded attempt of one solver: which modes it slipped on. {"solved": k, "slips": [[mode, ...], ...]},
+    one list per attempt that did not pass (empty when its failing tests map to no mode)."""
+    criteria = json.loads((task_dir / "authoring" / "criteria.json").read_text())
+    test_mode = {t: c.get("mode", c["id"]) for c in criteria for t in c.get("tests", [])}
+    slips = [sorted({test_mode.get(t) for t in failed} - {None}) for failed in model_result["failed_tests"].values()]
+    slips += [[] for _ in model_result.get("unreproduced", [])]
+    return {"solved": model_result["solved"], "slips": slips}
+
+
+def _read_gate(task_dir: Path, name: str) -> dict:
+    p = task_dir / "authoring" / "gate" / name
+    return json.loads(p.read_text()) if p.exists() else {}
+
+
+def record(task_dir: Path, diff: dict, rounds: int, kind: str = "calibrate") -> dict:
     design = json.loads((task_dir / "authoring" / "design.json").read_text())
     graded = sum(m["graded"] for m in diff["models"].values())
+    log = read_jsonl(task_dir / "authoring" / "gate" / "difficulty_log.jsonl")
+    first = log[0]["models"] if log else {}
+    first_graded = sum(v["graded"] for v in first.values())
+    hinted = _read_gate(task_dir, "hinted.json")
+    by_model = {}
+    for model, m in diff["models"].items():
+        patterns = slip_patterns(task_dir, m)
+        by_model[model] = {"agent": m["agent"], "attempts": m["graded"], "solved": m["solved"], "patterns": patterns,
+                           "mode_slips": dict(Counter(mode for slip in patterns["slips"] for mode in slip))}
     row = {
         "task": task_dir.name,
+        "date": time.strftime("%Y-%m-%d"),
+        "kind": kind,
         "modes": design.get("modes", []),
         "attempts": graded,
         "solved": sum(m["solved"] for m in diff["models"].values()),
         "models": {k: {"agent": v["agent"], "rate": v["rate"]} for k, v in diff["models"].items()},
+        "by_model": by_model,
         "mode_slips": mode_slips(task_dir, diff),
+        "predicted": design.get("predicted_rate"),
+        "first_rate": round(sum(v["solved"] for v in first.values()) / first_graded, 3) if first_graded else None,
+        "regret": hinted.get("regret"),
+        "design_score": hinted.get("score"),
         "rounds": rounds,
         "in_band": diff["ok"],
     }
-    HISTORY.parent.mkdir(parents=True, exist_ok=True)
-    with HISTORY.open("a") as f:
+    combine.HISTORY.parent.mkdir(parents=True, exist_ok=True)
+    with combine.HISTORY.open("a") as f:
         f.write(json.dumps(row) + "\n")
+    return row
 
 
 def run(task_dir: Path, modes_path: Path | None = None) -> bool:
@@ -149,12 +182,17 @@ def gate_failures(task_dir: Path) -> dict:
 
 
 def fresh_mode(task_dir: Path, modes_path: Path | None) -> str:
+    """The mode to add to a task that measured too easy: the one whose handle rate would bring
+    the measured pass rate nearest the target (combine.pick_extra)."""
     design = json.loads((task_dir / "authoring" / "design.json").read_text())
     pool_path = modes_path or task_dir.parent.parent / "failure_modes.json"
     pool = [m for m in read_json(pool_path) if m["id"] not in design.get("modes", [])]
     if not pool:
         return "any documented failure mode not yet in this task"
-    m = pick_modes(pool, 1, random.Random())[0]
+    models = _read_gate(task_dir, "difficulty.json").get("models", {})
+    graded = sum(m["graded"] for m in models.values())
+    rate = sum(m["solved"] for m in models.values()) / graded if graded else 1.0
+    m = combine.pick_extra(pool, rate, random.Random())
     design.setdefault("modes", []).append(m["id"])
     (task_dir / "authoring" / "design.json").write_text(json.dumps(design, indent=2))
     return f"{m['id']}: {m['mode']} (textbook build: {m.get('textbook_build')}; hidden case: {m.get('hidden_case')})"

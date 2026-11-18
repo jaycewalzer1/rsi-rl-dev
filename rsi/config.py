@@ -59,6 +59,10 @@ class Config:
 
     # combine at least this many independent failure modes into one task
     min_modes: int = int(_env("RSI_MIN_MODES", "3"))
+    max_modes: int = int(_env("RSI_MAX_MODES", "4"))
+    # weight of history measured with a solver that is not in solver_models (a newer model
+    # handles more, so old slips are weak evidence about it)
+    stale_weight: float = float(_env("RSI_STALE_WEIGHT", "0.25"))
 
     extra: dict = field(default_factory=dict)
 

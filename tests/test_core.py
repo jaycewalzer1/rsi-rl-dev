@@ -95,4 +95,4 @@ def test_prior_history_and_examples_load():
     assert all(set(r["modes"]) <= seed_ids for r in rows)
     assert all(set(r["mode_slips"]) <= set(r["modes"]) for r in rows)
     assert "Measured 1/3" in combine.examples()
-    assert "{" not in combine.DESIGN.format(modes="x", target=0.25, examples="y").split("JSON:")[0]
+    assert "{" not in combine.DESIGN.format(modes="x", target=0.25, predicted=0.25, examples="y").split("JSON:")[0]

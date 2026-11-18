@@ -23,7 +23,8 @@ What the numbers say:
 
 ## How the pipeline uses this
 - `history.jsonl` is read by `rsi combine` as the starting prior, together with
-  `runs/history.jsonl`. Its `mode_slips` give derived-surface-omitted and sibling-path-missed
-  a head start, and idempotency-under-failure (0 slips in 15 attempts) a handicap.
+  `runs/history.jsonl`. It gives each mode a handle rate: derived-surface-omitted 6 of 12
+  attempts, sibling-path-missed 4 of 7, idempotency-under-failure 15 of 15. `combine` stacks
+  modes so the product of those rates lands near the target pass rate.
 - `designs/*.json` (five of the six; space administrators has no write-up) show the expected shape of a design and what a measured one looks like.
   `rsi combine` also passes them to the author model as worked examples.

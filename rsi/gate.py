@@ -28,6 +28,7 @@ import math
 import re
 import shutil
 import tempfile
+import time
 import tomllib
 from pathlib import Path
 
@@ -338,7 +339,12 @@ def stage_difficulty(task_dir: Path, attempts: int | None = None, round_no: int 
     ok = all(m["verdict"] == "in_band" for m in per_model.values())
     note = "; ".join(f"{m}: {v['solved']}/{v['graded']} {v['verdict']}"
                      + (f" ({len(v['unreproduced'])} passes did not survive replay)" if v["unreproduced"] else "") for m, v in per_model.items())
-    return _save(task_dir, "difficulty", ok, {"models": per_model, "band": [CONFIG.band_low, CONFIG.band_high], "note": note})
+    out = _save(task_dir, "difficulty", ok, {"models": per_model, "band": [CONFIG.band_low, CONFIG.band_high], "note": note})
+    # every measurement, in order: the first line is the design's first shot, before any revision
+    with (task_dir / "authoring" / "gate" / "difficulty_log.jsonl").open("a") as f:
+        f.write(json.dumps({"date": time.strftime("%Y-%m-%d"), "round": round_no, "checksum": out["checksum"],
+                            "models": {m: {"solved": v["solved"], "graded": v["graded"]} for m, v in per_model.items()}}) + "\n")
+    return out
 
 
 # ---------------------------------------------------------------- hinted
