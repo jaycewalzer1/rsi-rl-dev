@@ -132,10 +132,17 @@ kokopelli repo) through kokopelli's GPU queue:
    family, and a control family from a different dataset. All-or-nothing grading
 3. collect: sample answers on training combinations from the plain job up to the harder
    level. An answer that crashes on the rows the model was shown gets its own
-   traceback back and up to two more goes. Keep only answers the oracle grades fully right.
-   The reward is the only teacher: no reference solution or expected value reaches the model
+   traceback back and up to two more goes; one that runs but is graded wrong is told only
+   that. A rule that still has no correct answer gets 64
+   extra samples: there is nothing to learn from until one is right. Keep only answers the
+   oracle grades fully right. The reward is the only teacher: no reference solution or
+   expected value reaches the model
 4. train: LoRA (r16 on q/k/v/o) with mlx-vlm's SFT trainer on every kept answer, as
-   ticket -> final correct code, loss on the answer only
+   ticket -> final correct code, loss on the answer only. About one training combination in
+   six per level is set aside as dev tasks, never trained on and never in the benchmark. After
+   each epoch the model answers them; the epoch that solves most is the adapter, and training
+   stops once an epoch does worse than an earlier one. The first recipe (no dev check, twice
+   the learning rate) made the model drop brackets and imports and gained nothing
 5. benchmark after: the same held-out tasks with the adapter, with a paired exact test
 6. repeat 3 to 5 (3 rounds by default); each round samples with the previous round's adapter
 

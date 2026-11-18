@@ -188,7 +188,7 @@ const STAGES = [
   ["gate", "Gate", "rsi gate"],
   ["qwen", "Qwen", "calibrate, bench, train, bench"],
 ];
-const QWEN = new Set(["calibrate", "settle", "collect", "train", "qwen", "smoke"]);
+const QWEN = new Set(["calibrate", "settle", "collect", "train", "dev", "qwen", "smoke"]);
 const $ = id => document.getElementById(id);
 let all = [], cursor = 0, timer = null, liveTimer = null;
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
@@ -313,13 +313,16 @@ function dumbbell(b, a) {
 }
 
 function rounds(evs, before, afters) {
-  const col = evs.filter(e => e.kind === "metric" && e.name === "collect");
+  const byRound = {};  // a resumed job reports a round again: the last report stands
+  for (const e of evs) if (e.kind === "metric" && e.name === "collect") byRound[e.round] = e;
+  const col = Object.values(byRound).sort((a, b) => a.round - b.round);
   if (!col.length) return "";
+  const afterOf = r => afters.filter(e => e.name === "bench_after_r" + r).pop();
   const cell = v => v && v.n ? `${pct(v.rate)} <span class="note">${v.solved}/${v.n}</span>` : "–";
   const row = (label, c, m) => `<tr><td>${label}</td><td>${c ? `${c.solved}/${c.sampled}` : ""}</td><td>${c ? c.fixed : ""}</td><td>${c ? c.value : ""}</td><td>${m ? cell(m.sets.headline) : "running"}</td><td>${m ? cell(m.sets.harder) : ""}</td></tr>`;
-  return `<table class="rounds"><thead><tr><th>Round</th><th>First tries right</th><th>Right after a fix</th><th>Answers kept</th><th>Headline</th><th>Harder</th></tr></thead><tbody>${
-    row("Before", null, before)}${col.map((c, i) => row(c.round, c, afters[i])).join("")}</tbody></table>
-    <p class="note">Each round samples with the previous round's adapter. A crashed answer gets its own traceback back, never the expected result.</p>`;
+  return `<table class="rounds"><thead><tr><th>Round</th><th>First tries right</th><th>Right after feedback</th><th>Answers kept</th><th>Headline</th><th>Harder</th></tr></thead><tbody>${
+    row("Before", null, before)}${col.map(c => row(c.round, c, afterOf(c.round))).join("")}</tbody></table>
+    <p class="note">Each round samples with the previous round's adapter. A failed answer gets its own traceback, or is told only that it was graded wrong; never the expected result. How long to train is decided on set-aside dev tasks, not on the benchmark.</p>`;
 }
 
 document.addEventListener("mousemove", e => {

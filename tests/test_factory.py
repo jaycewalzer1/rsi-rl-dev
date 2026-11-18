@@ -3,7 +3,7 @@ import json
 import pytest
 
 from rsi import business_gen, events, family as F, family_check, gate, intake, scan_hn
-from rsi.qwen import SETS, choose_levels, compare, markdown, mcnemar, rate, train_plan
+from rsi.qwen import Ctx, SETS, by_combination, choose_levels, collect_tasks, compare, dev_tasks, explore_tasks, markdown, mcnemar, rate, train_plan
 
 
 def raw(seed=7, n=900):
@@ -118,6 +118,16 @@ def test_mcnemar_counts_only_changed_tasks():
     assert mcnemar(before, before)["p"] == 1.0
 
 
+def test_tasks_that_share_a_rule_combination_count_as_one_unit():
+    rows = lambda solved: [{"id": i, "combo": i // 5, "solved": i in solved} for i in range(30)]  # 6 combinations x 5 tasks
+    one = by_combination(rows(set()), rows(set(range(10))))  # 10 tasks gained, but they are 2 combinations
+    assert (one["combinations"], one["up"], one["down"], one["p_by_combination"]) == (6, 2, 0, 0.5)
+    assert mcnemar(rows(set()), rows(set(range(10))))["p"] < 0.01  # the task-level test calls the same data significant
+    spread = by_combination(rows(set()), rows({0, 5, 10, 15, 20, 25}))  # 6 tasks gained across 6 combinations
+    assert spread["p_by_combination"] == 0.03125
+    assert by_combination(rows({1}), rows({1}))["p_by_combination"] == 1.0
+
+
 def test_crash_feedback_is_the_candidates_own_traceback(business, shoe):
     db = F.load_dbs(business)[0]
     t = F.Task(shoe.id, (), {"store_id": "S02"})
@@ -147,9 +157,28 @@ def test_training_never_uses_a_benchmark_combination(shoe):
     assert all(split[l]["train"] for l in plan["levels"] if l)
 
 
+def test_dev_tasks_are_never_trained_on_and_never_in_the_benchmark(business, shoe):
+    ctx = Ctx()
+    ctx.add(shoe, F.load_dbs(business))
+    plan = train_plan([shoe], {shoe.id: {"headline": 1, "harder": 3}}, 6)
+    dev = dev_tasks(ctx, plan, 12)
+    assert len({t.id for t in dev}) == 12 and {t.level for t in dev} == {1, 2, 3}
+    dev_rules = {t.rules for t in dev}
+    split = F.split_combos(shoe)
+    assert not dev_rules & {c for s in split.values() for c in s["bench"]}
+    for rnd in (1, 2):
+        tasks = collect_tasks(ctx, plan, rnd)
+        assert not dev_rules & {t.rules for t in tasks}
+        assert [sum(t.level == l for t in tasks) for l in (1, 2, 3)] == [6, 6, 6]  # the set-aside ones are replaced, not just dropped
+    rule = split[1]["bench"][0][0]  # alone it is a benchmark task, so the extra samples must come from a pair
+    more = explore_tasks(ctx, plan, {shoe.id: {rule}}, 1)[(shoe.id, rule)]
+    assert more and all(rule in t.rules and t.level == 2 for t in more)
+    assert not {t.rules for t in more} & (dev_rules | set(split[2]["bench"]))
+
+
 def test_report_renders_before_training_and_after_a_round():
     def bench(solved):
-        rows = {n: [{"id": i, "solved": i < solved[n]} for i in range(20 if n != "out_of_reach" else 0)] for n in SETS}
+        rows = {n: [{"id": f"{n}-{i}", "solved": i < solved[n]} for i in range(20 if n != "out_of_reach" else 0)] for n in SETS}
         return {"model": {"adapter": "runs/x/qwen/adapter_r1"}, "rows": rows,
                 "sets": {n: {**rate(v), "by_family": {"fam L2": rate(v)}, "failures": {"wrong answer": 3}} for n, v in rows.items()}}
     r = {"model": {"id": "m", "weights": "w", "quantization": None}, "dataset": "d", "slices": 3, "families": ["fam"], "control": "shoe",
@@ -163,10 +192,16 @@ def test_report_renders_before_training_and_after_a_round():
     r["after_r1"] = bench({"headline": 16, "harder": 9, "control": 4, "out_of_reach": 0})
     r["compare_r1"] = compare(r["before"], r["after_r1"])
     r["collect_r1"] = {"solved": 30, "sampled": 100, "solved_after_fix": 8, "fix_turns": 40, "rules_with_a_kept_answer": {"fam": "7/8"}}
-    r["train_r1"] = {"rows": 38, "rows_by_family": {"fam": 38}, "steps": 114, "first_loss": 0.2, "last_loss": 0.1, "seconds": 300, "peak_memory_gb": 12.0}
+    dev = lambda k: {"solved": k, "n": 32, "crashed": 2}
+    r["dev_base"] = dev(9)
+    r["train_r1"] = {"rows": 38, "rows_by_family": {"fam": 38}, "steps": 114, "first_loss": 0.2, "last_loss": 0.1, "seconds": 300, "peak_memory_gb": 12.0,
+                     "settings": {"learning_rate": 5e-5}, "chosen_epoch": 2,
+                     "epochs": [{"epoch": e, "steps": 38, "loss": 0.1, "dev": dev(k)} for e, k in ((1, 12), (2, 17), (3, 15))]}
     r["last_round"] = 1
     text = markdown(r)
     assert "| headline | 10/20 (50%" in text and "16/20 (80%" in text and "**met**" in text and "out_of_reach" not in text
+    assert "| headline + harder | 15/40 (38%) | 25/40 (62%) | 10 | 0 |" in text
+    assert "12/32 (2 crash), 17/32 (2 crash), 15/32 (2 crash); epoch 2 kept" in text and "solves 9/32" in text
 
 
 def test_swarm_logs_every_agent(tmp_path):
