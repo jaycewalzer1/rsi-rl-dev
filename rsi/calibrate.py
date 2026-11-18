@@ -24,7 +24,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
-from . import build, combine, gate
+from . import archive, build, combine, gate
 from .config import CONFIG
 from .store import read_json, read_jsonl
 
@@ -148,6 +148,7 @@ def run(task_dir: Path, modes_path: Path | None = None) -> bool:
         verdicts = {m["verdict"] for m in diff["models"].values()}
         if verdicts == {"in_band"}:
             record(task_dir, diff, rnd + 1)
+            archive.admit(task_dir, diff)
             print(f"calibrate: IN BAND\n{gate.summary(task_dir)}")
             return True
         if "too_easy" in verdicts:

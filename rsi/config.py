@@ -64,6 +64,9 @@ class Config:
     # handles more, so old slips are weak evidence about it)
     stale_weight: float = float(_env("RSI_STALE_WEIGHT", "0.25"))
 
+    # a design this similar (0..1, word n-gram cosine) to a task already in the pool is a copy
+    novelty_max: float = float(_env("RSI_NOVELTY_MAX", "0.6"))
+
     extra: dict = field(default_factory=dict)
 
 

@@ -68,6 +68,8 @@ uv run rsi gate      runs/r1/task/<slug>                       # every stage
 uv run rsi gate      runs/r1/task/<slug> --stages oracle,nop,mutations
 uv run rsi summary   runs/r1/task/<slug>                       # STALE if the task changed since
 uv run rsi calibrate runs/r1/task/<slug>
+uv run rsi pool                                                # calibrated tasks, active and retired
+uv run rsi recheck                                             # re-measure them when the solver changes
 ```
 
 Try the gate on the bundled smoke task (Docker only, no model calls):
@@ -178,6 +180,7 @@ All settings are environment variables (see `rsi/config.py`):
 | `RSI_INSPECT_REVIEWS` | `3` independent fairness reviews per distinct failure; one "unfair" is enough |
 | `RSI_HINTED`, `RSI_HINTED_ATTEMPTS` | `auto` (hinted attempts only when nobody solved it cold; `always`, `off`), `4` |
 | `RSI_MIN_MODES` / `RSI_MAX_MODES` | `3` / `4` failure modes stacked per design |
+| `RSI_NOVELTY_MAX` | `0.6`: a design this similar in wording to an existing task is dropped as a copy |
 | `RSI_STALE_WEIGHT` | `0.25`: weight of history measured with a solver that is not in `RSI_SOLVER_MODELS` |
 | `RSI_HARBOR`, `RSI_HARBOR_ENV` | `harbor`, `docker` |
 | `RSI_LLM` | `cli` (headless `claude -p`) or `api` (Messages API with `ANTHROPIC_API_KEY`) |

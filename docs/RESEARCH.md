@@ -220,3 +220,38 @@ predictive model, and `pick_modes` should go back to something simpler.
 difficulty prediction from the ticket text.
 
 **Status.** Built. `tests/test_policy.py`.
+
+## 7. The pool: novelty, solver-relative re-measurement, retirement
+
+**The work.** OMNI-EPIC (ICLR 2025, arXiv:2405.15568) keeps an archive of generated tasks
+and has a foundation model judge whether a new one is interestingly new. EvoEnv
+(arXiv:2605.14392) admits an environment only if its similarity to the admitted cache (half
+prompt embedding, half code embedding, a frozen MiniLM) stays under 0.80, rotates
+environments out of the active pool, and reuses retired ones as few-shot examples for the
+generator. EvoEnv's own limitation is the one that mattered here too: calibration is a
+one-time check against the solver of that moment.
+
+**What was here.** No memory of tasks at all. Nothing stopped `combine` from designing the
+same task twice, and a task calibrated against Opus 5.5 stayed "in band" forever.
+
+**What this repo does.** `rsi/archive.py`, `runs/archive.jsonl`:
+- **Novelty, two layers.** Mechanical: word n-gram cosine against the pool and the worked
+  examples; at `RSI_NOVELTY_MAX` (0.6) or above the design is dropped before any review.
+  Judged: the central-change reviewer now sees one line per existing task and must name
+  the task a design duplicates, if any.
+- **Admission.** A task that calibrates into the band joins the active pool.
+- **Recheck.** `rsi recheck` measures the active tasks again with today's
+  `RSI_SOLVER_MODELS`. Each result is a `recheck` row in history, which is how the design
+  policy (section 6) learns what a new solver handles.
+- **Retirement.** A task that re-measures too easy leaves the active pool and is shown to
+  the author as a saturated design that should not be rebuilt.
+
+**Evidence, for and against.** The five hackathon designs score 0.11 to 0.37 against each
+other, and a light rewording of one scores 0.96, so 0.6 separates copies from distinct
+tasks. A full rewording by hand of the same task scores 0.32: the mechanical layer cannot
+see a duplicate in other words. Only the judged layer can, and its accuracy is unmeasured.
+
+**Left out.** Sentence embeddings (the repo has one dependency and stays that way). EvoEnv's
+novelty reward for the generator: there is no generator to reward.
+
+**Status.** Built. `tests/test_archive.py`, Harbor and the reviewer faked.

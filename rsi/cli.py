@@ -8,6 +8,10 @@
   rsi gate     TASK_DIR [--stages a,b]    stage 5, the testing suite
   rsi summary  TASK_DIR                   stage results, STALE if the task changed
   rsi calibrate TASK_DIR                  stage 6, hold the pass rate in the band
+  rsi pool                                the calibrated tasks: active and retired
+  rsi recheck  [--task NAME] [--attempts N]
+                                          measure the active tasks again with today's solvers;
+                                          retire the ones that have become too easy
 
   rsi factory  --run NAME --business DIR [--modes-from RUN] [--families 3] [--only STAGES]
                                           business data in, proven task families and Harbor tasks out:
@@ -24,7 +28,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import build, calibrate, combine, gate, papers, scan_x
+from . import archive, build, calibrate, combine, gate, papers, scan_x
 from .config import CONFIG
 
 
@@ -69,10 +73,22 @@ def main(argv: list[str] | None = None) -> int:
         p = sub.add_parser(name)
         p.add_argument("task_dir", type=Path)
         p.add_argument("--stages")
+    sub.add_parser("pool")
+    p = sub.add_parser("recheck")
+    p.add_argument("--task", action="append", help="only this task (repeatable); default: every active task")
+    p.add_argument("--attempts", type=int)
     a = ap.parse_args(argv)
 
     print(f"models: author {CONFIG.author_model}, judge {CONFIG.judge_model}, "
           f"solvers {', '.join(CONFIG.solver_models)} via {CONFIG.solver_agent}")
+
+    if a.cmd == "pool":
+        print(archive.listing())
+        return 0
+    if a.cmd == "recheck":
+        archive.recheck(a.task, a.attempts)
+        print(archive.listing())
+        return 0
 
     if a.cmd in ("gate", "summary", "calibrate"):
         if a.cmd == "gate":

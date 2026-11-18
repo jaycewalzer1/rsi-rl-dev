@@ -28,7 +28,7 @@ import random
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import llm
+from . import archive, llm
 from .config import CONFIG
 from .store import read_json, read_jsonl, write_json
 
@@ -85,8 +85,12 @@ Also check fairness: is every criterion plainly stated in the ticket?
 
 {design}
 
+Tasks already built (a design that is one of these in other words, the same rules on the same
+kind of system, is a duplicate; the same failure modes on a different system is not):
+{pool}
+
 JSON: {{"central_change_found": true|false, "change": "...", "unfair_criteria": ["AC id", ...],
-"verdict": "accept|reject", "why": "..."}}"""
+"duplicate_of": "<name of the task it duplicates, or null>", "verdict": "accept|reject", "why": "..."}}"""
 
 
 def history_rows() -> list[dict]:
@@ -223,16 +227,26 @@ def backtest(rows: list[dict] | None = None) -> dict:
             "baseline_mae": round(sum(abs(r["baseline"] - r["actual"]) for r in out) / n, 3), "rows": out}
 
 
+def example_designs() -> list[dict]:
+    return [json.loads(p.read_text()) for p in sorted((EXAMPLES / "designs").glob("*.json"))]
+
+
+def built() -> str:
+    """One line per task that already exists: the pool and the worked examples."""
+    rows = [(r["task"], r.get("modes", []), r.get("summary", "")) for r in archive.pool()]
+    rows += [(d["slug"], d.get("modes", []), d.get("summary", "")) for d in example_designs()]
+    return "\n".join(f"- {name} [{', '.join(modes)}]: {summary}" for name, modes, summary in rows)
+
+
 def examples() -> str:
     out = []
-    for p in sorted((EXAMPLES / "designs").glob("*.json")):
-        d = json.loads(p.read_text())
+    for d in example_designs():
         m = d.get("measured", {})
         out.append(
             f"- {d['slug']} [{', '.join(d['modes'])}]: {d['summary']} "
             f"Measured {m.get('solved')}/{m.get('attempts')} solved; slips: {m.get('slips')}. {d.get('lesson', '')}"
         )
-    return "\n".join(out)
+    return "\n".join(out + ([archive.saturated_examples()] if archive.pool("retired") else []))
 
 
 def design(modes: list[dict], k: int, rng: random.Random, tries: int = 3) -> dict:
@@ -248,14 +262,19 @@ def design(modes: list[dict], k: int, rng: random.Random, tries: int = 3) -> dic
             for m in chosen
         )
         d = llm.ask_json(DESIGN.format(modes=text, target=CONFIG.target_rate, predicted=predicted, examples=examples()), CONFIG.author_model)
-        review = llm.ask_json(CENTRAL.format(design=d), CONFIG.judge_model)
+        sim, twin = archive.nearest(d, example_designs())
+        if sim >= CONFIG.novelty_max:  # a near copy by wording: no review needed to see it
+            print(f"combine: design {attempt + 1} rejected: {sim:.2f} similar to {twin}")
+            continue
+        review = llm.ask_json(CENTRAL.format(design=d, pool=built()), CONFIG.judge_model)
         d["modes"] = [m["id"] for m in chosen]
         d["predicted_rate"] = round(predicted, 3)
+        d["novelty"] = {"nearest": twin, "similarity": round(sim, 3)}
         d["design_review"] = review
-        if review.get("verdict") == "accept" and not review.get("central_change_found"):
+        if review.get("verdict") == "accept" and not review.get("central_change_found") and not review.get("duplicate_of"):
             return d
         print(f"combine: design {attempt + 1} rejected: {review.get('why', '')[:200]}")
-    raise RuntimeError("combine: no design survived the central-change review")
+    raise RuntimeError("combine: no design survived the central-change and novelty review")
 
 
 def run(out_dir: Path, seed: int | None = None) -> Path:
