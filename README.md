@@ -101,7 +101,9 @@ writes `authoring/gate/<stage>.json` stamped with the task checksum.
 ## Business data in, a measured Qwen improvement out
 
 `rsi factory` takes a company's data export and produces proven task families and Harbor
-tasks; `rsi qwen` post-trains a local Qwen on them and measures it before and after. Every
+tasks; `rsi qwen` post-trains a local Qwen on them and measures it before and after. The
+post-training is rejection fine-tuning (sample, keep what the oracle grades fully right, SFT
+on that); it is not a policy-gradient method. Every
 agent is logged to `runs/<run>/events.jsonl`; `rsi demo` shows the run live or as a replay.
 
 ```
@@ -148,6 +150,11 @@ kokopelli repo) through kokopelli's GPU queue:
    ticket -> final correct code, loss on the answer only
 5. benchmark after: the same held-out tasks with the adapter, with a paired exact test
 6. repeat 3 to 5 (3 rounds by default); each round samples with the previous round's adapter
+
+Each round also reports how many training tasks had both passing and failing samples: the
+share a group-relative RL step could have learned from. And two ablation arms test the
+stacking claim: `rsi qwen --run NAME --arm single` trains only on tickets with one rule on,
+`--arm stacked` only on tickets with two or more, both against the same before benchmark.
 
 Benchmark rule combinations are never trained on, so "after" measures transfer to rule
 stacks the model never saw graded. `runs/<run>/qwen/REPORT.md` names model, weights and

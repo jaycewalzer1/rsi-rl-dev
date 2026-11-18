@@ -65,6 +65,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--k", type=int, default=4)
     p.add_argument("--bench-n", type=int, default=20)
     p.add_argument("--collect-n", type=int, default=6)
+    p.add_argument("--arm", choices=["curriculum", "single", "stacked"], default="curriculum",
+                   help="training tickets: the curriculum, one rule at a time, or two or more rules (the stacking ablation)")
+    p.add_argument("--max-rows", type=int, help="cap on answers trained on per round; set it the same for arms you compare")
     p.add_argument("--smoke", action="store_true", help="a few answers per family, to see where Qwen stands")
     p.add_argument("--dry", action="store_true", help="print the queue command only")
     p = sub.add_parser("demo")
@@ -150,16 +153,18 @@ def _factory(a) -> int:
         root = Path(__file__).resolve().parent.parent
         what = "a few answers per family (smoke)" if a.smoke else (
             "levels adjusted until the before pass rate is about 50% (headline) and 25% (harder) on held-out tasks, LoRA "
-            "post-trained over several rounds on its own graded-correct answers, benchmarked after each round")
-        cmd = ["python3", str(KOKO / "kokopelli" / "ops" / "gpu.py"), "run", "--name", f"rsi_qwen_{a.run}" + ("_smoke" if a.smoke else ""),
+            f"fine-tuned over several rounds on its own graded-correct answers (rejection fine-tuning, arm {a.arm}), benchmarked after each round")
+        suffix = "_smoke" if a.smoke else "" if a.arm == "curriculum" else f"_{a.arm}"
+        cmd = ["python3", str(KOKO / "kokopelli" / "ops" / "gpu.py"), "run", "--name", f"rsi_qwen_{a.run}{suffix}",
                "--priority", "50", "--gb", "18", "--cwd", str(root),
                "--about", f"rsi-rl-dev Qwen leg on run {a.run}: Qwen3-VL-8B-Instruct 4-bit on task families written for "
                           f"that run's business data; {what}",
-               "--output", f"runs/{a.run}/qwen" + ("_smoke" if a.smoke else ""), "--",
+               "--output", f"runs/{a.run}/qwen{suffix}", "--",
                str(KOKO / ".venv" / "bin" / "python"), "-u", "-m", "rsi.qwen", "--run", a.run]
         cmd += ["--smoke"] if a.smoke else ["--rounds", str(a.rounds), "--k", str(a.k), "--bench-n", str(a.bench_n),
                                             "--collect-n", str(a.collect_n), "--headline-target", str(a.headline_target),
-                                            "--harder-target", str(a.harder_target)]
+                                            "--harder-target", str(a.harder_target), "--arm", a.arm]
+        cmd += ["--max-rows", str(a.max_rows)] if a.max_rows and not a.smoke else []
         print(shlex.join(cmd))
         return 0 if a.dry else subprocess.call(cmd)
     elif a.cmd == "demo":

@@ -35,6 +35,19 @@ resumes. It loads Qwen, so it runs with kokopelli's venv (mlx-vlm), only through
     uv run rsi qwen --run NAME            # queues it; see cli.py for the exact command
 
 Every result file names the model and weights it used.
+
+What this is, by its usual name: rejection fine-tuning (RFT, also "expert iteration"). The
+model samples, a verifiable reward filters, and it is fine-tuned with plain SFT on its own
+answers that passed. It is not a policy-gradient method: there is no advantage, no baseline
+and no penalty on failed samples. `trainability` reports the reward variance inside each
+group of samples, which is the signal a group-relative RL step (GRPO) would have had.
+
+    --arm curriculum   train on the plain job up to the harder level (the default)
+    --arm single       train only on tickets with ONE rule on (every rule, never together)
+    --arm stacked      train only on tickets with TWO OR MORE rules on
+The arms share calibration and the before benchmark, so single vs stacked is the test of
+whether training on stacked rules transfers better to held-out stacks than training on
+the same rules one at a time (docs/RESEARCH.md, section 9).
 """
 
 from __future__ import annotations
@@ -63,6 +76,9 @@ LORA = {"rank": 16, "alpha": 32.0, "dropout": 0.0, "targets": ["q_proj", "k_proj
 # the bar this repo sets for "post-training worked"; not a lab standard
 TARGET_GAIN, TARGET_P = 0.20, 0.05
 CONFIRM = 20  # tasks behind a calibration level before it can be chosen
+ARMS = ("curriculum", "single", "stacked")
+METHOD = ("rejection fine-tuning (RFT): sample with the current adapter, keep only answers the oracle grades fully right, "
+          "LoRA fine-tune on them with plain SFT; no policy-gradient step")
 HEADLINE_TARGET, HARDER_TARGET, TOLERANCE = 0.50, 0.25, 0.10  # where the BEFORE pass rates should sit
 FIX = ("Running your function on the sample tables raised:\n\n{trace}\n\n"
        "Fix it. Reply with the complete corrected function in one ```python block.")
@@ -196,6 +212,21 @@ def rate(rows: list[dict]) -> dict:
     k, n = sum(r["solved"] for r in rows), len(rows)
     lo, hi = wilson(k, n)
     return {"solved": k, "n": n, "rate": round(k / n, 3) if n else None, "wilson95": [round(lo, 3), round(hi, 3)]}
+
+
+def trainability(rows: list[dict]) -> dict:
+    """Reward variance inside each task's group of samples. A group where every sample failed or
+    every sample passed gives a group-relative RL step (GRPO) nothing: its advantages are all
+    zero. p(1-p) per group is that signal; `signal_share` is the share of groups that have any."""
+    groups = defaultdict(list)
+    for r in rows:
+        groups[r["id"]].append(bool(r["solved"]))
+    n = len(groups)
+    zero, one = sum(not any(v) for v in groups.values()), sum(all(v) for v in groups.values())
+    var = [(p := sum(v) / len(v)) * (1 - p) for v in groups.values()]
+    return {"tasks": n, "all_failed": zero, "all_solved": one, "mixed": n - zero - one,
+            "signal_share": round((n - zero - one) / n, 3) if n else None,
+            "mean_reward_variance": round(sum(var) / n, 4) if n else None}
 
 
 def mcnemar(before: list[dict], after: list[dict]) -> dict:
@@ -355,6 +386,8 @@ def collect(qwen: Qwen, ctx: Ctx, plan: dict[str, dict], out: Path, rnd: int, k:
                "fix_turns": len(fixed), "solved_after_fix": sum(r["solved"] for r in fixed),
                "kept": len(kept), "tasks": len(tasks), "tasks_with_a_solve": len(per_task),
                "first_try_by_family_level": {key: rate(v) for key, v in sorted(by.items())},
+               "trainability": trainability(first),
+               "trainability_by_family_level": {key: trainability(v) for key, v in sorted(by.items())},
                "rules_with_a_kept_answer": {fid: f"{len(covered[fid])}/{len(ctx.fams[fid].rules)}" for fid in plan}}
     write_json(out / f"collect_r{rnd}.json", summary)
     write_json(out / f"kept_r{rnd}.json", kept)
@@ -364,15 +397,16 @@ def collect(qwen: Qwen, ctx: Ctx, plan: dict[str, dict], out: Path, rnd: int, k:
     return kept
 
 
-def train(qwen: Qwen, rows: list[dict], adapter_dir: Path) -> dict:
+def train(qwen: Qwen, rows: list[dict], adapter_dir: Path, max_rows: int | None = None) -> dict:
     import mlx.core as mx
     import mlx.optimizers as optim
     from mlx_vlm.trainer.api import Trainer
     from mlx_vlm.trainer.common.model import prepare_model_for_training
     from mlx_vlm.trainer.vlm.config import VLMTrainingArgs
     rng = random.Random(LORA["seed"])
-    if len(rows) > LORA["max_rows"]:
-        rows = rng.sample(rows, LORA["max_rows"])
+    cap = max_rows or LORA["max_rows"]
+    if len(rows) > cap:
+        rows = rng.sample(rows, cap)
     events.emit("stage_start", stage="train", msg=f"LoRA r{LORA['rank']} on {len(rows)} answers x {LORA['epochs']} epochs")
     adapter_dir.mkdir(parents=True, exist_ok=True)
     mx.set_cache_limit(2 * 1024 ** 3)  # the trainer's buffer cache grew to 32 GB on a 36 GB Mac without this
@@ -408,6 +442,16 @@ def train(qwen: Qwen, rows: list[dict], adapter_dir: Path) -> dict:
 
 # ---------------------------------------------------------------- the run
 
+def share_before(main: Path, out: Path) -> None:
+    """An ablation arm starts from the main run's calibration and before-benchmark answers, so
+    every arm is measured against the same before, with no generation spent twice."""
+    if main == out or not main.exists():
+        return
+    for name in ("calibrate.jsonl", "bench_before.jsonl"):
+        if (main / name).exists() and not (out / name).exists():
+            (out / name).write_text((main / name).read_text())
+
+
 def control_ctx(run_dir: Path, ctx: Ctx) -> F.Family:
     """The shoe-store family on its own synthetic dataset: nothing in the run trains on it."""
     base = run_dir / "control"
@@ -439,10 +483,13 @@ def bench_sets(ctx: Ctx, fams: list[F.Family], control: F.Family, levels: dict[s
     return sets
 
 
-def train_plan(fams: list[F.Family], levels: dict[str, dict], n: int) -> dict[str, dict]:
+def train_plan(fams: list[F.Family], levels: dict[str, dict], n: int, arm: str = "curriculum") -> dict[str, dict]:
     """Training levels per family: from the plain job up to the harder benchmark level, never a
     rule combination a benchmark uses. An out-of-reach family gets a few level-1 tasks, in case
-    what the model learns on the others carries over."""
+    what the model learns on the others carries over.
+
+    The ablation arms keep the number of training tasks of the curriculum and change only what
+    is on them: `single` has one rule on per ticket, `stacked` has two or more."""
     plan = {}
     for fam in fams:
         split = F.split_combos(fam)
@@ -451,7 +498,14 @@ def train_plan(fams: list[F.Family], levels: dict[str, dict], n: int) -> dict[st
             continue
         lv = levels[fam.id]
         want = [l for l in range(1, lv["harder"] + 1) if split[l]["train"]]
-        plan[fam.id] = {"levels": ([0] if lv["headline"] >= 1 else []) + (want or [1, 2]), "n": n}
+        full = ([0] if lv["headline"] >= 1 else []) + (want or [1, 2])
+        if arm == "single":
+            chosen = [1]
+        elif arm == "stacked":
+            chosen = [l for l in full if l >= 2] or [2]
+        else:
+            chosen = full
+        plan[fam.id] = {"levels": chosen, "n": n if arm == "curriculum" else max(n, round(n * len(full) / len(chosen)))}
     return plan
 
 
@@ -493,10 +547,11 @@ def compare(before: dict, after: dict) -> dict:
 
 
 def run(run_dir: Path, *, bench_n: int, cal_n: int, collect_n: int, k: int, rounds: int,
-        targets: tuple[float, float] = (HEADLINE_TARGET, HARDER_TARGET)) -> dict:
+        targets: tuple[float, float] = (HEADLINE_TARGET, HARDER_TARGET), arm: str = "curriculum", max_rows: int | None = None) -> dict:
     import mlx.core as mx
-    out = run_dir / "qwen"
+    out = run_dir / ("qwen" if arm == "curriculum" else f"qwen_{arm}")
     out.mkdir(parents=True, exist_ok=True)
+    share_before(run_dir / "qwen", out)
     events.open_log(run_dir)
     fams = F.load_run(run_dir)
     if not fams:
@@ -506,7 +561,7 @@ def run(run_dir: Path, *, bench_n: int, cal_n: int, collect_n: int, k: int, roun
     for fam in fams:
         ctx.add(fam, dbs)
     control = control_ctx(run_dir, ctx)
-    report: dict = {"started": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "dataset": json.loads((run_dir / "business" / "catalog.json").read_text())["source"],
+    report: dict = {"arm": arm, "method": METHOD, "started": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "dataset": json.loads((run_dir / "business" / "catalog.json").read_text())["source"],
                     "slices": len(dbs), "families": [f.id for f in fams], "control": control.id,
                     "settings": {"bench_n": bench_n, "cal_n": cal_n, "confirm_n": CONFIRM, "collect_n": collect_n, "k": k, "rounds": rounds,
                                  "headline_target": targets[0], "harder_target": targets[1]}}
@@ -533,7 +588,7 @@ def run(run_dir: Path, *, bench_n: int, cal_n: int, collect_n: int, k: int, roun
     if not sets["headline"]:
         report["stopped"] = "no family is in reach, so there is no headline to train for"
         rounds = 0
-    plan = train_plan(fams, levels, collect_n)
+    plan = train_plan(fams, levels, collect_n, arm)
 
     kept: list[dict] = []
     for rnd in range(1, rounds + 1):
@@ -550,7 +605,7 @@ def run(run_dir: Path, *, bench_n: int, cal_n: int, collect_n: int, k: int, roun
             report[f"train_r{rnd}"] = json.loads((adapter / "run.json").read_text())
         else:
             qwen = Qwen()  # every round trains from the base weights on all answers kept so far
-            report[f"train_r{rnd}"] = train(qwen, kept, adapter)
+            report[f"train_r{rnd}"] = train(qwen, kept, adapter, max_rows)
             del qwen
             mx.clear_cache()
         qwen = Qwen(adapter=adapter)
@@ -577,6 +632,7 @@ def markdown(r: dict) -> str:
     pct = lambda v: f"{v['solved']}/{v['n']} ({v['rate']:.0%}, 95% {v['wilson95'][0]:.0%}-{v['wilson95'][1]:.0%})"
     lines = ["# Qwen post-training on business-data tasks", "",
              f"Model: {m['id']}, weights `{m['weights']}` (quantization {m['quantization']}).",
+             f"Method: {r.get('method', METHOD)}. Training arm: {r.get('arm', 'curriculum')}.",
              f"Dataset: `{r['dataset']}`, {r['slices']} disjoint slices; answers are graded on all of them.",
              f"Task families: {', '.join(r['families'])}. Control (different dataset, never trained on): {r['control']}.", "",
              "## Where the benchmark sits", "",
@@ -622,7 +678,14 @@ def markdown(r: dict) -> str:
         lines.append(f"| {rnd} | {col['solved']}/{col['sampled']} | {col['solved_after_fix']}/{col['fix_turns']} | {t['rows']} | "
                      + ", ".join(f"{v}" for v in col["rules_with_a_kept_answer"].values()) + f" | {pct(s['headline'])} | "
                      + " | ".join(pct(s[x]) if s[x]["n"] else "-" for x in ("harder", "control")) + " |")
-    lines += ["", "Each round samples with the previous round's adapter and trains from the base weights on every answer kept so far.", "", "## Training", ""]
+    lines += ["", "Each round samples with the previous round's adapter and trains from the base weights on every answer kept so far.", "",
+              "Reward variance in the samples (a task whose samples all failed or all passed would give a group-relative RL step no signal):", ""]
+    for rnd in range(1, last + 1):
+        t = r[f"collect_r{rnd}"].get("trainability")
+        if t and t["tasks"]:
+            lines.append(f"- round {rnd}: {t['mixed']} of {t['tasks']} tasks had both passing and failing samples ({t['signal_share']:.0%}); "
+                         f"{t['all_failed']} all failed, {t['all_solved']} all passed; mean p(1-p) {t['mean_reward_variance']}")
+    lines += ["", "## Training", ""]
     for rnd in range(1, last + 1):
         t = r[f"train_r{rnd}"]
         lines.append(f"- round {rnd}: {t['rows']} answers ({t['rows_by_family']}), {t['steps']} steps, loss {t['first_loss']} -> {t['last_loss']}, "
@@ -660,12 +723,14 @@ def main() -> None:
     ap.add_argument("--rounds", type=int, default=3)
     ap.add_argument("--headline-target", type=float, default=HEADLINE_TARGET, help="before pass rate the headline set should sit at")
     ap.add_argument("--harder-target", type=float, default=HARDER_TARGET, help="before pass rate the harder set should sit at")
+    ap.add_argument("--arm", choices=ARMS, default="curriculum", help="what the training tickets hold; single vs stacked is the ablation")
+    ap.add_argument("--max-rows", type=int, help="cap on answers trained on per round (set it the same for arms you compare)")
     ap.add_argument("--smoke", action="store_true", help="a few answers per family and exit")
     a = ap.parse_args()
     if a.smoke:
         return smoke(CONFIG.runs_dir / a.run)
     run(CONFIG.runs_dir / a.run, bench_n=a.bench_n, cal_n=a.cal_n, collect_n=a.collect_n, k=a.k, rounds=a.rounds,
-        targets=(a.headline_target, a.harder_target))
+        targets=(a.headline_target, a.harder_target), arm=a.arm, max_rows=a.max_rows)
 
 
 if __name__ == "__main__":

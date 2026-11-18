@@ -293,3 +293,51 @@ trajectory, so it cannot say where in the session the agent went wrong (AgentRx'
 question).
 
 **Status.** Built. `tests/test_mine.py`, judge faked. Not yet run on real attempts.
+
+## 9. The Qwen leg: what it is called, whether it had signal, and the stacking test
+
+**The work.**
+- Naming. Sampling from the current model, keeping the samples a verifiable reward accepts
+  and fine-tuning on them with plain SFT is rejection fine-tuning, also called reward-ranked
+  fine-tuning (RAFT) or expert iteration. Xiong et al. (arXiv:2504.11343) compare it with
+  GRPO and PPO on math reasoning and find it competitive, and trace much of GRPO's edge to
+  dropping prompts whose samples are all wrong, not to its reward normalisation.
+- Signal. GenEnv (arXiv:2512.19682) rewards its environment generator with a score peaked at
+  a target success rate and shows the expected squared gradient norm of the agent's update
+  scales with p(1-p). Endless Terminals (arXiv:2601.16443) filters generated tasks for
+  solvability before training on them. Same point as section 6: a task every sample fails,
+  or every sample passes, teaches a group-relative method nothing.
+- Contamination. Countdown-Code (arXiv:2603.07084) finds that when as little as 1% of SFT
+  data is reward-hacking trajectories, the model internalises the hack and it resurfaces
+  under RL.
+
+**What was wrong here.** The README called this leg RL-flavoured post-training without
+naming the method. It is RFT. The reward is the only teacher, as the README said, but there
+is no policy gradient, and an interviewer will ask.
+
+**What changed.** `rsi/qwen.py`:
+- The docstring, the report and the queue description name the method.
+- `trainability`: for each round's samples, how many tasks had both passing and failing
+  samples, how many had none passing, how many all passing, and the mean p(1-p). It goes in
+  `collect_r*.json` and `REPORT.md`. It tells you whether a GRPO step would have had
+  anything to learn from, before anyone spends time building one.
+- `--arm single | stacked`: the ablation for the stacking claim. Same families, same
+  held-out benchmark, same before measurements (an arm starts from the main run's
+  calibration and before answers), same number of training tasks. `single` trains only on
+  tickets with one rule on; `stacked` only on tickets with two or more. Compare the two
+  after-rates on the held-out stacks. Use the same `--max-rows` for both.
+
+**What the contamination result means for this leg.** Training rows are the model's own
+answers, so a graded-correct answer that cheated would be trained in. The local grader
+(`family.score`) runs each candidate in its own process and computes the expected answer
+in the parent, so the cheats of section 2 do not apply to it. That is an argument, not a
+measurement: nobody has red-teamed `family.score` the way `tests/test_verifier.py` does
+the exported verifier.
+
+**Left out.** GRPO itself. On one Mac with a 4-bit 8B model the honest order is: check
+`trainability` on a real run first. If most groups are all-fail or all-pass, RL would have
+had the same problem and the levels need moving, not the algorithm.
+
+**Status.** Built; pure functions tested in `tests/test_qwen_arms.py`. No Qwen run has been
+done on this branch (it needs the Mac, MLX and the weights), and there is still no REPORT.md
+in the repo.
