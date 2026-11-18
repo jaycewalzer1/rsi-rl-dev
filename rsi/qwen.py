@@ -510,7 +510,7 @@ def train_plan(fams: list[F.Family], levels: dict[str, dict], n: int, arm: str =
 
 
 def benchmark(qwen: Qwen, ctx: Ctx, sets: dict[str, list[F.Task]], tag: str, out: Path) -> dict:
-    events.emit("stage_start", stage=f"bench_{tag}", msg=f"held-out benchmark, greedy: " + ", ".join(f"{k} {len(v)}" for k, v in sets.items()))
+    events.emit("stage_start", stage=f"bench_{tag}", msg="held-out benchmark, greedy: " + ", ".join(f"{k} {len(v)}" for k, v in sets.items()))
     res = {"model": qwen.describe(), "sets": {}, "rows": {}}
     for name, tasks in sets.items():
         rows = attempt(qwen, ctx, tasks, samples=1, temperature=0.0, stage=f"bench_{tag}", log=out / f"bench_{tag}.jsonl") if tasks else []
