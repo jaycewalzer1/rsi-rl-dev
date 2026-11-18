@@ -120,7 +120,7 @@ footer { margin-top: 26px; color: var(--muted); font-size: 12.5px; }
   <header>
     <div>
       <h1>Task foundry</h1>
-      <p class="lede">A company's data export goes in. Agents prune it, gather documented ways coding agents fail, and write task families over the data whose rules exercise those failures. Each family starts at a level the model cannot pass and comes down until the pass rate is about 25%. Qwen is then trained on its own graded-correct answers and benchmarked again on held-out tasks.</p>
+      <p class="lede">A company's data export goes in. Agents prune it, gather documented ways coding agents fail, and write task families over the data whose rules exercise those failures. Each family starts at a level the model cannot pass and comes down until the untrained model passes about half the headline tasks and a quarter of the harder ones. Qwen is then trained on its own graded-correct answers and benchmarked again on held-out tasks.</p>
     </div>
     <div class="controls">
       <button id="live" aria-pressed="false">Live</button>
@@ -140,7 +140,7 @@ footer { margin-top: 26px; color: var(--muted); font-size: 12.5px; }
   <div class="grid g2" style="margin-bottom:18px">
     <section>
       <h2>Annealing</h2>
-      <p class="sub">Each task family starts with every rule on and comes down until Qwen's pass rate reaches the shaded 15 to 35% band. The line is the 25% target.</p>
+      <p class="sub">Each task family starts with every rule on and comes down until Qwen passes about half the time. The lines are the two targets for the untrained model: 25% for the harder set, 50% for the headline. Bars are from calibration tasks; the levels are then settled on the held-out benchmark tasks.</p>
       <div class="ladder" id="ladder"></div>
       
       <p class="dropped" id="dropped"></p>
@@ -188,7 +188,7 @@ const STAGES = [
   ["gate", "Gate", "rsi gate"],
   ["qwen", "Qwen", "calibrate, bench, train, bench"],
 ];
-const QWEN = new Set(["calibrate", "collect", "train", "qwen", "smoke"]);
+const QWEN = new Set(["calibrate", "settle", "collect", "train", "qwen", "smoke"]);
 const $ = id => document.getElementById(id);
 let all = [], cursor = 0, timer = null, liveTimer = null;
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
@@ -233,25 +233,29 @@ function render() {
 
   // ladder: one block per family, levels top down
   const cal = evs.filter(e => e.stage === "calibrate" && e.kind === "metric");
-  const landed = evs.find(e => e.stage === "calibrate" && e.kind === "stage_end");
+  const calDone = evs.find(e => e.stage === "calibrate" && e.kind === "stage_end");
+  const landed = evs.find(e => e.stage === "settle" && e.kind === "stage_end");
+  const trying = evs.filter(e => e.kind === "metric" && e.name === "settle").pop();
   const fams = [...new Set(cal.map(e => e.family))];
   $("ladder").innerHTML = fams.length ? fams.map(f => {
     const m = new Map(cal.filter(e => e.family === f).map(e => [e.level, e]));
-    const top = Math.max(...m.keys(), 8), star = landed && landed.levels ? landed.levels[f] : null;
+    const top = Math.max(...m.keys(), 8), star = landed && landed.levels && f in landed.levels ? landed.levels[f] : null,
+      hard = landed && landed.harder_levels && f in landed.harder_levels ? landed.harder_levels[f] : null;
     const rows = [];
     for (let l = top; l >= 0; l--) {
       const e = m.get(l); if (!e && !(l === top)) { if (l > Math.min(...m.keys())) rows.push(`<div class="rung pending skipped"><div class="lv">Level ${l}</div><div class="track"></div><div class="val">skipped</div></div>`); continue; }
       const v = e ? e.value : undefined;
       rows.push(`<div class="rung ${v === undefined ? "pending" : ""} ${star === l ? "landed" : ""}">
-        <div class="lv">Level ${l}${star === l ? " ★" : ""}</div>
-        <div class="track"><div class="bandzone" style="left:15%;width:20%"></div>
+        <div class="lv">Level ${l}${star === l ? " ★" : hard === l ? " ☆" : ""}</div>
+        <div class="track">
           <div class="fill" style="width:${v ? Math.max(v * 100, 1.5) : 0}%;background:var(--heat-${Math.max(1, Math.min(8, l))})" data-tip="${esc(f)} level ${l}: ${e ? e.msg.split(": ")[1] : ""} solved"></div>
-          <div class="target" style="left:25%"></div></div>
+          <div class="target" style="left:25%"></div><div class="target" style="left:50%"></div></div>
         <div class="val">${v === undefined ? "–" : pct(v)}</div></div>`);
     }
-    return `<div class="famname">${esc(f)}${landed && landed.levels && star === null ? " <span class=\"note\">out of reach for this model, even with every rule off</span>" : ""}</div>` + rows.join("");
+    return `<div class="famname">${esc(f)}${landed && star === null ? " <span class=\"note\">out of reach for this model, even with every rule off</span>" : ""}</div>` + rows.join("");
   }).join("") : "";
-  $("dropped").textContent = landed ? "★ marks the level each family's benchmark sits at: the one whose measured pass rate is nearest 25%." :
+  $("dropped").textContent = landed ? `★ headline level, ☆ harder level. Settled on the held-out tasks: ${landed.msg}.` :
+    trying ? `Adjusting levels on the held-out tasks. ${trying.msg}.` : calDone ? "Calibration done; settling the benchmark levels." :
     fams.length ? "Coming down from the top level." : "Calibration starts when the Qwen job gets its turn on the GPU queue.";
 
   // feed
@@ -266,7 +270,7 @@ function render() {
   const afters = evs.filter(e => e.kind === "metric" && /^bench_after/.test(e.name || ""));
   const after = afters[afters.length - 1];
   const result = evs.filter(e => e.kind === "metric" && e.name === "result").pop();
-  $("headline").innerHTML = (before ? `<div><b>${pct(before.value)}</b>before, at the calibrated level</div>` : "")
+  $("headline").innerHTML = (before ? `<div><b>${pct(before.value)}</b>before, at the settled levels</div>` : "")
     + (after ? `<div><b>${pct(after.value)}</b>after training</div>` : "")
     + (result ? `<div><b>${result.p < 0.001 ? "<0.001" : result.p}</b>paired p-value</div>` : "");
   $("dumb").innerHTML = before ? dumbbell(before, after) + rounds(evs, before, afters) : `<p class="empty">The benchmark runs after calibration. Nothing has been measured yet.</p>`;

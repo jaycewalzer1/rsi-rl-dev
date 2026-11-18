@@ -3,7 +3,7 @@ import json
 import pytest
 
 from rsi import business_gen, events, family as F, family_check, gate, intake, scan_hn
-from rsi.qwen import mcnemar, pick_level, train_plan
+from rsi.qwen import SETS, choose_levels, compare, markdown, mcnemar, rate, train_plan
 
 
 def raw(seed=7, n=900):
@@ -127,20 +127,46 @@ def test_crash_feedback_is_the_candidates_own_traceback(business, shoe):
     assert F.crash_on_shown(t, "```python\ndef solve(db, params):\n    return {'x': 1}\n```", db) == ""  # wrong but runs: no feedback
 
 
-def test_benchmark_level_is_the_confirmed_one_nearest_the_target():
-    m = lambda k, n: {"solved": k, "n": n, "rate": k / n}
-    assert pick_level({4: m(2, 20), 3: m(9, 20), 2: m(3, 5)}) == 4  # 10% is nearer 25% than 45%; 5 tasks confirm nothing
-    assert pick_level({4: m(2, 20), 3: m(4, 20), 2: m(9, 20)}) == 3  # a level inside the band wins
-    assert pick_level({1: m(0, 20), 0: m(0, 5)}) is None
+def test_levels_are_chosen_so_pooled_before_rates_sit_on_the_targets():
+    a = {0: (14, 20), 1: (10, 20), 2: (5, 20), 3: (1, 20)}
+    assert choose_levels({"a": a}) == {"a": (1, 2)}  # 50% and 25% exactly
+    b = {0: (8, 20), 1: (4, 20), 2: (0, 20)}  # a weaker family: its plain job is its headline
+    got = choose_levels({"a": a, "b": b})
+    assert got["b"] == (0, 1) and got["a"][0] <= 1
+    pooled = sum(x[got[f][0]][0] for f, x in (("a", a), ("b", b))) / 40
+    assert abs(pooled - 0.5) <= 0.1
+    assert choose_levels({"a": {0: (3, 20)}}) == {}  # one level cannot give a headline and a harder set
 
 
 def test_training_never_uses_a_benchmark_combination(shoe):
     split = F.split_combos(shoe)
-    plan = train_plan([shoe], {shoe.id: 2}, 6)[shoe.id]
+    plan = train_plan([shoe], {shoe.id: {"headline": 2, "harder": 3}}, 6)[shoe.id]
     assert plan["levels"] == [0, 1, 2, 3]  # level 0 is free to train on: the benchmark sits at 2 and 3
-    assert train_plan([shoe], {shoe.id: 0}, 6)[shoe.id]["levels"] == [1]
-    assert train_plan([shoe], {shoe.id: None}, 6)[shoe.id] == {"levels": [1], "n": 3}
+    assert train_plan([shoe], {shoe.id: {"headline": 0, "harder": 2}}, 6)[shoe.id]["levels"] == [1, 2]
+    assert train_plan([shoe], {}, 6)[shoe.id] == {"levels": [1], "n": 3}
     assert all(split[l]["train"] for l in plan["levels"] if l)
+
+
+def test_report_renders_before_training_and_after_a_round():
+    def bench(solved):
+        rows = {n: [{"id": i, "solved": i < solved[n]} for i in range(20 if n != "out_of_reach" else 0)] for n in SETS}
+        return {"model": {"adapter": "runs/x/qwen/adapter_r1"}, "rows": rows,
+                "sets": {n: {**rate(v), "by_family": {"fam L2": rate(v)}, "failures": {"wrong answer": 3}} for n, v in rows.items()}}
+    r = {"model": {"id": "m", "weights": "w", "quantization": None}, "dataset": "d", "slices": 3, "families": ["fam"], "control": "shoe",
+         "settings": {"headline_target": 0.5, "harder_target": 0.25},
+         "calibrate": {"fam": {"reach": True, "note": "", "curve": [{"level": 2, **rate([{"solved": True}] * 20)}]}},
+         "settle": {"targets": {"headline": 0.5, "harder": 0.25, "tolerance": 0.1}, "reached": True,
+                    "steps": [{"levels": {"fam": [2, 3]}, "headline": 0.5, "harder": 0.25, "measured": True}],
+                    "before_by_level": {"fam": {"2": {"solved": 10, "n": 20}}}},
+         "before": bench({"headline": 10, "harder": 5, "control": 4, "out_of_reach": 0})}
+    assert "50%" in markdown(r) and "has not finished" in markdown(r)
+    r["after_r1"] = bench({"headline": 16, "harder": 9, "control": 4, "out_of_reach": 0})
+    r["compare_r1"] = compare(r["before"], r["after_r1"])
+    r["collect_r1"] = {"solved": 30, "sampled": 100, "solved_after_fix": 8, "fix_turns": 40, "rules_with_a_kept_answer": {"fam": "7/8"}}
+    r["train_r1"] = {"rows": 38, "rows_by_family": {"fam": 38}, "steps": 114, "first_loss": 0.2, "last_loss": 0.1, "seconds": 300, "peak_memory_gb": 12.0}
+    r["last_round"] = 1
+    text = markdown(r)
+    assert "| headline | 10/20 (50%" in text and "16/20 (80%" in text and "**met**" in text and "out_of_reach" not in text
 
 
 def test_swarm_logs_every_agent(tmp_path):

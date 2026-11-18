@@ -3,15 +3,20 @@
     calibrate      per family, start at the top level (every rule on, "impossible") and come
                    down. Levels are screened with a few tasks until the first solve; from there
                    every level gets 20 tasks, and the descent stops once the pass rate reaches
-                   the target (RSI_TARGET_RATE, 25%). The level nearest the target, L*, is where
-                   the benchmark sits. A family Qwen cannot solve even with every rule off is
+                   the headline target. A family Qwen cannot solve even with every rule off is
                    reported as out of reach and kept out of the headline.
+    settle         choose, per family, a headline level and a harder level so that the BEFORE
+                   pass rates over all families land on the targets (headline 50%, harder 25%;
+                   --headline-target, --harder-target). The choice is tested on the held-out
+                   benchmark tasks themselves and adjusted until the levels it picks are the
+                   levels it measured. Greedy decoding is deterministic, so the rates it
+                   settles on are the before rates, not estimates of them.
     bench before   held-out tasks, greedy decoding, all-or-nothing on every data slice:
-                     headline      L* in every calibrated family   (the ~25% starting point)
-                     harder        L*+1 in the same families       (does the curve move)
-                     out_of_reach  level 0 of families that never reached the band
+                     headline      the headline level of every calibrated family
+                     harder        the harder level of the same families
+                     out_of_reach  level 0 of families that never produced a solve
                      control       a family from a DIFFERENT dataset nothing here trains on
-    collect        on TRAINING rule combinations from level 0 up to L*+1: k samples per task.
+    collect        on TRAINING rule combinations from level 0 up to the harder level: k samples per task.
                    An answer that crashes on the rows the model was shown gets its own traceback
                    back and another go (twice at most). Only answers the oracle grades fully
                    right are kept. The reward is the only teacher: no reference solution and no
@@ -35,6 +40,7 @@ Every result file names the model and weights it used.
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import math
 import os
@@ -57,6 +63,7 @@ LORA = {"rank": 16, "alpha": 32.0, "dropout": 0.0, "targets": ["q_proj", "k_proj
 # the bar this repo sets for "post-training worked"; not a lab standard
 TARGET_GAIN, TARGET_P = 0.20, 0.05
 CONFIRM = 20  # tasks behind a calibration level before it can be chosen
+HEADLINE_TARGET, HARDER_TARGET, TOLERANCE = 0.50, 0.25, 0.10  # where the BEFORE pass rates should sit
 FIX = ("Running your function on the sample tables raised:\n\n{trace}\n\n"
        "Fix it. Reply with the complete corrected function in one ```python block.")
 
@@ -203,18 +210,14 @@ def mcnemar(before: list[dict], after: list[dict]) -> dict:
 
 # ---------------------------------------------------------------- calibrate
 
-def pick_level(measured: dict[int, dict], confirm: int = CONFIRM) -> int | None:
-    """The confirmed level nearest the target, a level inside the band first; None if no
-    confirmed level has a solve (the family is out of this model's reach)."""
-    solid = {l: m for l, m in measured.items() if m["n"] >= confirm and m["solved"] >= 1}
-    if not solid:
-        return None
-    return min(solid, key=lambda l: (not CONFIG.band_low <= solid[l]["rate"] <= CONFIG.band_high,
-                                     abs(solid[l]["rate"] - CONFIG.target_rate), -l))
+def _confirmed(level: int, m: dict) -> bool:
+    """Enough tasks behind a level to choose it. Level 0 has as many tasks as there are params."""
+    return m["n"] >= CONFIRM or (level == 0 and m["n"] >= 5)
 
 
-def calibrate(qwen: Qwen, ctx: Ctx, fam: F.Family, out: Path, n: int = 5, confirm: int = CONFIRM) -> dict:
-    """Come down from the top level until the pass rate reaches the target; return L*."""
+def calibrate(qwen: Qwen, ctx: Ctx, fam: F.Family, out: Path, n: int = 5, confirm: int = CONFIRM, stop_at: float = HEADLINE_TARGET) -> dict:
+    """Come down from the top level until the pass rate reaches the headline target. Returns the
+    curve; `reach` is False when no confirmed level has a solve."""
     db = ctx.dbs[fam.id][0]
     top = len(fam.rules)
     measured: dict[int, dict] = {}
@@ -234,15 +237,88 @@ def calibrate(qwen: Qwen, ctx: Ctx, fam: F.Family, out: Path, n: int = 5, confir
         if not seen and m["solved"]:
             seen = True
             m = measure(level, confirm)
-            if m["rate"] >= CONFIG.band_low and level + 1 <= top:
-                measure(level + 1, confirm)  # the level jumped over may be the one nearer the target
-        if seen and m["rate"] >= CONFIG.target_rate:
+            if level + 1 <= top:
+                measure(level + 1, confirm)  # the level jumped over may be the harder level
+        if seen and m["rate"] >= stop_at:
             break
-    level = pick_level(measured, confirm)
-    note = ("level whose measured pass rate is nearest the target" if level is not None else
-            "out of reach: Qwen solved nothing, or too little, even with every rule off")
-    return {"family": fam.id, "level": level, "note": note,
+    reach = any(_confirmed(l, m) and m["solved"] for l, m in measured.items())
+    return {"family": fam.id, "reach": reach,
+            "note": "" if reach else "out of reach: Qwen solved nothing, or too little, even with every rule off",
             "curve": [{"level": l, **m} for l, m in sorted(measured.items(), reverse=True)]}
+
+
+def choose_levels(rates: dict[str, dict[int, tuple[int, int]]], targets: tuple[float, float] = (HEADLINE_TARGET, HARDER_TARGET)) -> dict[str, tuple[int, int]]:
+    """Per family a (headline, harder) pair of levels, harder above headline, so the pass rates
+    pooled over families sit nearest the targets. rates: family -> level -> (solved, n). A small
+    extra cost keeps each family near the targets too, so one family is not all of the headline."""
+    fams = [f for f in rates if len(rates[f]) >= 2]
+    if not fams:
+        return {}
+    options = [[(h, g) for h in sorted(rates[f]) for g in sorted(rates[f]) if g > h] for f in fams]
+    best, best_cost = {}, None
+    for combo in itertools.product(*options):
+        cost = 0.0
+        for which, target in enumerate(targets):
+            pairs = [rates[f][lv[which]] for f, lv in zip(fams, combo)]
+            cost += abs(sum(k for k, _ in pairs) / sum(n for _, n in pairs) - target)
+            cost += 0.25 * sum(abs(k / n - target) for k, n in pairs) / len(pairs)
+        cost -= 1e-6 * sum(h + g for h, g in combo)  # ties go to the harder levels
+        if best_cost is None or cost < best_cost:
+            best, best_cost = dict(zip(fams, combo)), cost
+    return best
+
+
+def settle(qwen: Qwen, ctx: Ctx, fams: list[F.Family], cal: dict[str, dict], n: int, out: Path,
+           targets: tuple[float, float] = (HEADLINE_TARGET, HARDER_TARGET)) -> dict:
+    """Adjust the benchmark levels until the BEFORE rates on the held-out tasks sit on the targets.
+
+    Start from the calibration curve (training-pool tasks), measure the levels it points to on the
+    benchmark tasks, choose again with the measurements in place of the estimates, and repeat until
+    every chosen level is one that was measured."""
+    events.emit("stage_start", stage="settle", msg=f"adjust levels until before is about {targets[0]:.0%} (headline) and {targets[1]:.0%} (harder)")
+    guess = {fid: {x["level"]: (x["solved"], x["n"]) for x in c["curve"] if _confirmed(x["level"], x)} for fid, c in cal.items() if c["reach"]}
+    by_id = {f.id: f for f in fams}
+    measured: dict[str, dict[int, tuple[int, int]]] = {fid: {} for fid in guess}
+    steps = []
+    while True:
+        rates = {fid: {**guess[fid], **measured[fid]} for fid in guess}
+        levels = choose_levels(rates, targets)
+        new = [(fid, l) for fid, pair in levels.items() for l in pair if l not in measured[fid]]
+        pooled = [sum(rates[f][lv[i]][0] for f, lv in levels.items()) / max(1, sum(rates[f][lv[i]][1] for f, lv in levels.items())) for i in (0, 1)]
+        steps.append({"levels": {f: list(lv) for f, lv in levels.items()}, "headline": round(pooled[0], 3), "harder": round(pooled[1], 3),
+                      "measured": not new})
+        events.emit("metric", stage="settle", name="settle", value=pooled[0], harder=pooled[1], levels=steps[-1]["levels"], final=not new,
+                    msg=("settled: " if not new else "trying: ") + ", ".join(f"{f} L{h}/L{g}" for f, (h, g) in levels.items())
+                        + f" -> headline {pooled[0]:.0%}, harder {pooled[1]:.0%}" + ("" if not new else " (part estimated)"))
+        if not levels:
+            break
+        if not new:
+            # measured and settled. If it missed a target, widen the search: the level next to each
+            # chosen one, on the side the miss points to, and choose again with it measured.
+            miss = [pooled[i] - targets[i] for i in (0, 1)]
+            for fid, pair in levels.items():
+                for i in (0, 1):
+                    step = 0 if abs(miss[i]) <= TOLERANCE else (-1 if miss[i] < 0 else 1)  # too few solved: an easier level
+                    lvl = pair[i] + step
+                    if step and 0 <= lvl <= len(by_id[fid].rules) and lvl not in measured[fid] and (fid, lvl) not in new:
+                        new.append((fid, lvl))
+            if not new:
+                break
+            steps[-1]["widened_to"] = [f"{f} L{l}" for f, l in new]
+            events.emit("work", stage="settle", agent="settle", role="qwen", msg="off target; also measuring " + ", ".join(steps[-1]["widened_to"]))
+        for fid, lvl in new:
+            fam = by_id[fid]
+            rows = attempt(qwen, ctx, F.make_tasks(fam, lvl, n, "bench", 1000, ctx.dbs[fid][0]), samples=1, temperature=0.0,
+                           stage="bench_before", log=out / "bench_before.jsonl")
+            measured[fid][lvl] = (sum(r["solved"] for r in rows), len(rows))
+    reached = bool(levels) and abs(pooled[0] - targets[0]) <= TOLERANCE and abs(pooled[1] - targets[1]) <= TOLERANCE
+    res = {"targets": {"headline": targets[0], "harder": targets[1], "tolerance": TOLERANCE}, "reached": reached,
+           "levels": {f: {"headline": h, "harder": g} for f, (h, g) in levels.items()}, "steps": steps,
+           "before_by_level": {f: {str(l): {"solved": k, "n": m} for l, (k, m) in sorted(v.items())} for f, v in measured.items()}}
+    events.emit("stage_end", stage="settle", levels={f: v["headline"] for f, v in res["levels"].items()},
+                harder_levels={f: v["harder"] for f, v in res["levels"].items()},
+                msg=f"before: headline {pooled[0]:.0%}, harder {pooled[1]:.0%}" + ("" if reached else " (targets not reached with the levels there are)"))
+    return res
 
 
 # ---------------------------------------------------------------- collect and train
@@ -348,33 +424,34 @@ def control_ctx(run_dir: Path, ctx: Ctx) -> F.Family:
 SETS = ("headline", "harder", "out_of_reach", "control")
 
 
-def bench_sets(ctx: Ctx, fams: list[F.Family], control: F.Family, levels: dict[str, int | None], n: int) -> dict[str, list[F.Task]]:
+def bench_sets(ctx: Ctx, fams: list[F.Family], control: F.Family, levels: dict[str, dict], n: int) -> dict[str, list[F.Task]]:
+    """levels: family -> {"headline": l, "harder": l}; a family not in it is out of reach."""
     sets: dict[str, list[F.Task]] = {name: [] for name in SETS}
     for fam in fams:
-        db, top, lvl = ctx.dbs[fam.id][0], len(fam.rules), levels[fam.id]
-        if lvl is None:
+        db = ctx.dbs[fam.id][0]
+        if fam.id not in levels:
             sets["out_of_reach"] += F.make_tasks(fam, 0, max(4, n // 2), "bench", 1000, db)
             continue
-        sets["headline"] += F.make_tasks(fam, lvl, n, "bench", 1000, db)
-        if lvl + 1 <= top:
-            sets["harder"] += F.make_tasks(fam, lvl + 1, max(4, n // 2), "bench", 1000, db)
+        for name in ("headline", "harder"):
+            sets[name] += F.make_tasks(fam, levels[fam.id][name], n, "bench", 1000, db)
     for lvl in (1, 2):
         sets["control"] += F.make_tasks(control, lvl, 8, "bench", 1000, ctx.dbs[control.id][0])
     return sets
 
 
-def train_plan(fams: list[F.Family], levels: dict[str, int | None], n: int) -> dict[str, dict]:
-    """Training levels per family: from the plain job up to one above the benchmark level, never
-    a rule combination a benchmark uses. An out-of-reach family gets a few level-1 tasks, in case
+def train_plan(fams: list[F.Family], levels: dict[str, dict], n: int) -> dict[str, dict]:
+    """Training levels per family: from the plain job up to the harder benchmark level, never a
+    rule combination a benchmark uses. An out-of-reach family gets a few level-1 tasks, in case
     what the model learns on the others carries over."""
     plan = {}
     for fam in fams:
-        lvl, split = levels[fam.id], F.split_combos(fam)
-        if lvl is None:
+        split = F.split_combos(fam)
+        if fam.id not in levels:
             plan[fam.id] = {"levels": [1], "n": max(2, n // 2)}
             continue
-        want = [l for l in range(1, min(lvl + 1, len(fam.rules)) + 1) if split[l]["train"]]
-        plan[fam.id] = {"levels": ([0] if lvl >= 1 else []) + (want or [1, 2]), "n": n}
+        lv = levels[fam.id]
+        want = [l for l in range(1, lv["harder"] + 1) if split[l]["train"]]
+        plan[fam.id] = {"levels": ([0] if lv["headline"] >= 1 else []) + (want or [1, 2]), "n": n}
     return plan
 
 
@@ -415,7 +492,8 @@ def compare(before: dict, after: dict) -> dict:
     return out
 
 
-def run(run_dir: Path, *, bench_n: int, cal_n: int, collect_n: int, k: int, rounds: int) -> dict:
+def run(run_dir: Path, *, bench_n: int, cal_n: int, collect_n: int, k: int, rounds: int,
+        targets: tuple[float, float] = (HEADLINE_TARGET, HARDER_TARGET)) -> dict:
     import mlx.core as mx
     out = run_dir / "qwen"
     out.mkdir(parents=True, exist_ok=True)
@@ -431,7 +509,7 @@ def run(run_dir: Path, *, bench_n: int, cal_n: int, collect_n: int, k: int, roun
     report: dict = {"started": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "dataset": json.loads((run_dir / "business" / "catalog.json").read_text())["source"],
                     "slices": len(dbs), "families": [f.id for f in fams], "control": control.id,
                     "settings": {"bench_n": bench_n, "cal_n": cal_n, "confirm_n": CONFIRM, "collect_n": collect_n, "k": k, "rounds": rounds,
-                                 "target_rate": CONFIG.target_rate, "band": [CONFIG.band_low, CONFIG.band_high]}}
+                                 "headline_target": targets[0], "harder_target": targets[1]}}
     events.emit("stage_start", stage="qwen", msg=f"Qwen leg on {len(fams)} families: " + ", ".join(f.id for f in fams))
 
     def save():
@@ -440,18 +518,20 @@ def run(run_dir: Path, *, bench_n: int, cal_n: int, collect_n: int, k: int, roun
 
     qwen = Qwen()
     report["model"] = qwen.describe()
-    events.emit("stage_start", stage="calibrate", msg="start impossible (every rule on), come down until the target")
-    report["calibrate"] = {fam.id: calibrate(qwen, ctx, fam, out, cal_n) for fam in fams}
+    events.emit("stage_start", stage="calibrate", msg="start impossible (every rule on), come down until the headline target")
+    report["calibrate"] = {fam.id: calibrate(qwen, ctx, fam, out, cal_n, stop_at=targets[0]) for fam in fams}
     write_json(out / "calibrate.json", report["calibrate"])
-    levels = {fid: c["level"] for fid, c in report["calibrate"].items()}
-    events.emit("stage_end", stage="calibrate", levels=levels,
-                msg="benchmark levels: " + ", ".join(f"{f} " + (f"L{l}" if l is not None else "out of reach") for f, l in levels.items()))
+    events.emit("stage_end", stage="calibrate", msg="in reach: " + (", ".join(f for f, c in report["calibrate"].items() if c["reach"]) or "no family")
+                + "; out of reach: " + (", ".join(f for f, c in report["calibrate"].items() if not c["reach"]) or "none"))
+    report["settle"] = settle(qwen, ctx, fams, report["calibrate"], bench_n, out, targets)
+    write_json(out / "settle.json", report["settle"])
+    levels = report["settle"]["levels"]
 
     sets = bench_sets(ctx, fams, control, levels, bench_n)
     report["before"] = benchmark(qwen, ctx, sets, "before", out)
     save()
     if not sets["headline"]:
-        report["stopped"] = "no family reached the band, so there is no headline to train for"
+        report["stopped"] = "no family is in reach, so there is no headline to train for"
         rounds = 0
     plan = train_plan(fams, levels, collect_n)
 
@@ -500,10 +580,20 @@ def markdown(r: dict) -> str:
              f"Dataset: `{r['dataset']}`, {r['slices']} disjoint slices; answers are graded on all of them.",
              f"Task families: {', '.join(r['families'])}. Control (different dataset, never trained on): {r['control']}.", "",
              "## Where the benchmark sits", "",
-             f"Coming down from the top level (every rule on) until the pass rate reaches {r['settings']['target_rate']:.0%}:", ""]
+             "Coming down from the top level (every rule on), on training-pool tasks:", ""]
     for fid, c in r["calibrate"].items():
-        where = f"benchmark at level {c['level']}" if c["level"] is not None else "no benchmark level"
-        lines.append(f"- {fid}: " + ", ".join(f"L{x['level']} {x['solved']}/{x['n']}" for x in c["curve"]) + f" -> {where} ({c['note']})")
+        lines.append(f"- {fid}: " + ", ".join(f"L{x['level']} {x['solved']}/{x['n']}" for x in c["curve"]) + (f" ({c['note']})" if c["note"] else ""))
+    st = r["settle"]
+    lines += ["", f"Levels were then adjusted on the held-out benchmark tasks until the before rates sat nearest "
+              f"{st['targets']['headline']:.0%} (headline) and {st['targets']['harder']:.0%} (harder):", ""]
+    for i, step in enumerate(st["steps"], 1):
+        lines.append(f"{i}. " + ", ".join(f"{f} L{h}/L{g}" for f, (h, g) in step["levels"].items())
+                     + f": headline {step['headline']:.0%}, harder {step['harder']:.0%}"
+                     + (" (part estimated; measured next)" if not step["measured"] else
+                        f" (measured; off target, so {', '.join(step['widened_to'])} measured too)" if step.get("widened_to") else " (measured; settled)"))
+    lines += ["", "Before, by level, on the benchmark tasks: " + "; ".join(
+        f"{f}: " + ", ".join(f"L{l} {v['solved']}/{v['n']}" for l, v in lv.items()) for f, lv in st["before_by_level"].items()) + ".",
+        "Targets " + ("reached" if st["reached"] else "NOT reached") + f" within {st['targets']['tolerance']:.0%} points."]
     if not last:
         b = r["before"]["sets"]
         lines += ["", "## Before", ""] + [f"- {k}: {pct(v)}" for k, v in b.items() if v["n"]]
@@ -540,49 +630,6 @@ def markdown(r: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-def markdown(r: dict) -> str:
-    m = r["model"]
-    last = r.get("last_round")
-    lines = ["# Qwen post-training on business-data tasks", "",
-             f"Model: {m['id']}, weights `{m['weights']}` (quantization {m['quantization']}).",
-             f"Dataset: `{r['dataset']}`, {r['slices']} disjoint slices; answers are graded on all of them.",
-             f"Task families: {', '.join(r['families'])}. Control (different dataset, never trained on): {r['control']}.", "",
-             "## Where the benchmark sits", "",
-             "Coming down from the top level (every rule on) until the pass rate reaches the band:", ""]
-    for fid, c in r["calibrate"].items():
-        lines.append(f"- {fid}: " + ", ".join(f"L{x['level']} {x['solved']}/{x['n']}" for x in c["curve"]) + f" -> benchmark at level {c['level']} ({c['note']})")
-    if not last:
-        b = r["before"]["sets"]
-        lines += ["", "## Before", ""] + [f"- {k}: {v['solved']}/{v['n']} ({v['rate']:.0%})" for k, v in b.items() if v["n"]]
-        lines += ["", f"Training did not run: {r.get('stopped', 'not finished')}."]
-        return "\n".join(lines) + "\n"
-    a, b, c = r[f"after_r{last}"], r["before"], r[f"compare_r{last}"]
-    lines += ["", f"## Result after round {last}", "",
-              f"After = the same weights + LoRA `{a['model']['adapter']}`. Held-out rule combinations, greedy decoding, all-or-nothing.", "",
-              "| set | before | after | gained | lost | paired p |", "|---|---|---|---|---|---|"]
-    for name in ("headline", "harder", "control"):
-        bb, aa, cc = b["sets"][name], a["sets"][name], c[name]
-        if not bb["n"]:
-            continue
-        lines.append(f"| {name} | {bb['solved']}/{bb['n']} ({bb['rate']:.0%}, 95% {bb['wilson95'][0]:.0%}-{bb['wilson95'][1]:.0%}) "
-                     f"| {aa['solved']}/{aa['n']} ({aa['rate']:.0%}, 95% {aa['wilson95'][0]:.0%}-{aa['wilson95'][1]:.0%}) "
-                     f"| {cc['gained']} | {cc['lost']} | {cc['p']} |")
-    t = c["target"]
-    lines += ["", f"Bar set by this repo (not a lab standard): headline gain of at least {t['gain_at_least']:.0%} points with paired p below {t['p_below']}: "
-              + ("**met**." if t["met"] else "**not met**."), "", "By family (headline):", ""]
-    for fam_level, bb in b["sets"]["headline"]["by_family"].items():
-        aa = a["sets"]["headline"]["by_family"].get(fam_level, {})
-        lines.append(f"- {fam_level}: {bb['solved']}/{bb['n']} -> {aa.get('solved', '-')}/{aa.get('n', '-')}")
-    lines += ["", "Why answers failed (headline), before -> after:", "",
-              f"- before: {b['sets']['headline']['failures']}", f"- after: {a['sets']['headline']['failures']}", "", "## Training", ""]
-    for rnd in range(1, last + 1):
-        col, t = r[f"collect_r{rnd}"], r[f"train_r{rnd}"]
-        lines.append(f"- round {rnd}: {col['sampled']} samples on {col['tasks']} training tasks, {col['solved']} graded correct, "
-                     f"{t['rows']} kept for training ({t['rows_by_family']}); {t['steps']} steps, loss {t['first_loss']} -> {t['last_loss']}, "
-                     f"{t['seconds'] / 60:.0f} min, peak {t['peak_memory_gb']} GB")
-    return "\n".join(lines) + "\n"
-
-
 def smoke(run_dir: Path) -> None:
     """A few answers per family at the easy end, batch and fix paths included, to see where Qwen stands."""
     out = run_dir / "qwen_smoke"
@@ -611,11 +658,14 @@ def main() -> None:
     ap.add_argument("--collect-n", type=int, default=6, help="training tasks per level per family per round")
     ap.add_argument("--k", type=int, default=4, help="samples per training task")
     ap.add_argument("--rounds", type=int, default=3)
+    ap.add_argument("--headline-target", type=float, default=HEADLINE_TARGET, help="before pass rate the headline set should sit at")
+    ap.add_argument("--harder-target", type=float, default=HARDER_TARGET, help="before pass rate the harder set should sit at")
     ap.add_argument("--smoke", action="store_true", help="a few answers per family and exit")
     a = ap.parse_args()
     if a.smoke:
         return smoke(CONFIG.runs_dir / a.run)
-    run(CONFIG.runs_dir / a.run, bench_n=a.bench_n, cal_n=a.cal_n, collect_n=a.collect_n, k=a.k, rounds=a.rounds)
+    run(CONFIG.runs_dir / a.run, bench_n=a.bench_n, cal_n=a.cal_n, collect_n=a.collect_n, k=a.k, rounds=a.rounds,
+        targets=(a.headline_target, a.harder_target))
 
 
 if __name__ == "__main__":

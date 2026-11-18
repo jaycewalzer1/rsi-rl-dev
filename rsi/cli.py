@@ -54,6 +54,8 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("qwen")
     p.add_argument("--run", required=True)
     p.add_argument("--rounds", type=int, default=3)
+    p.add_argument("--headline-target", type=float, default=0.50, help="before pass rate the headline set should sit at")
+    p.add_argument("--harder-target", type=float, default=0.25, help="before pass rate the harder set should sit at")
     p.add_argument("--k", type=int, default=4)
     p.add_argument("--bench-n", type=int, default=20)
     p.add_argument("--collect-n", type=int, default=6)
@@ -120,7 +122,7 @@ def _factory(a) -> int:
         from .qwen import KOKO
         root = Path(__file__).resolve().parent.parent
         what = "a few answers per family (smoke)" if a.smoke else (
-            "calibrated from the top level down to a 25% pass rate, benchmarked on held-out tasks, LoRA "
+            "levels adjusted until the before pass rate is about 50% (headline) and 25% (harder) on held-out tasks, LoRA "
             "post-trained over several rounds on its own graded-correct answers, benchmarked after each round")
         cmd = ["python3", str(KOKO / "kokopelli" / "ops" / "gpu.py"), "run", "--name", f"rsi_qwen_{a.run}" + ("_smoke" if a.smoke else ""),
                "--priority", "50", "--gb", "18", "--cwd", str(root),
@@ -129,7 +131,8 @@ def _factory(a) -> int:
                "--output", f"runs/{a.run}/qwen" + ("_smoke" if a.smoke else ""), "--",
                str(KOKO / ".venv" / "bin" / "python"), "-u", "-m", "rsi.qwen", "--run", a.run]
         cmd += ["--smoke"] if a.smoke else ["--rounds", str(a.rounds), "--k", str(a.k), "--bench-n", str(a.bench_n),
-                                            "--collect-n", str(a.collect_n)]
+                                            "--collect-n", str(a.collect_n), "--headline-target", str(a.headline_target),
+                                            "--harder-target", str(a.harder_target)]
         print(shlex.join(cmd))
         return 0 if a.dry else subprocess.call(cmd)
     elif a.cmd == "demo":

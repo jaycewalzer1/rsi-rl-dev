@@ -122,13 +122,16 @@ kokopelli repo) through kokopelli's GPU queue:
 
 1. calibrate: per family, come down from the top level. Levels are screened with 5 tasks until
    the first solve; from there every level gets 20, and the descent stops once the pass rate
-   reaches 25%. The benchmark sits at the confirmed level nearest 25%. A family Qwen cannot
-   solve even with every rule off is reported as out of reach and kept out of the headline
-2. benchmark before: held-out rule combinations at that level (headline), one level harder,
-   the plain job of any out-of-reach family, and a control family from a different dataset;
-   greedy, all-or-nothing
-3. collect: sample answers on training combinations from the plain job up to one level above
-   the benchmark. An answer that crashes on the rows the model was shown gets its own
+   reaches the headline target. A family Qwen cannot solve even with every rule off is reported
+   as out of reach and kept out of the headline
+2. settle and benchmark before: per family pick a headline level and a harder level so the
+   BEFORE pass rates pooled over families sit at 50% (headline) and 25% (harder)
+   (`--headline-target`, `--harder-target`). The pick is measured on the held-out benchmark
+   tasks and adjusted until the levels it picks are levels it measured; decoding is greedy, so
+   those are the before rates themselves. Also measured: the plain job of any out-of-reach
+   family, and a control family from a different dataset. All-or-nothing grading
+3. collect: sample answers on training combinations from the plain job up to the harder
+   level. An answer that crashes on the rows the model was shown gets its own
    traceback back and up to two more goes. Keep only answers the oracle grades fully right.
    The reward is the only teacher: no reference solution or expected value reaches the model
 4. train: LoRA (r16 on q/k/v/o) with mlx-vlm's SFT trainer on every kept answer, as
