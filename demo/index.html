@@ -107,6 +107,8 @@ section { background: var(--panel); border: 1px solid var(--line); border-radius
 table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); }
 th { font-weight: 600; color: var(--ink-2); }
+.note { font-size: 12px; color: var(--ink-2); font-weight: 400; }
+.rounds { margin-top: 14px; font-variant-numeric: tabular-nums; }
 .pass { color: var(--ok); font-weight: 700; }
 .failt { color: var(--fail); font-weight: 700; }
 .empty { color: var(--muted); font-size: 13.5px; padding: 14px 0; }
@@ -247,7 +249,7 @@ function render() {
           <div class="target" style="left:25%"></div></div>
         <div class="val">${v === undefined ? "–" : pct(v)}</div></div>`);
     }
-    return `<div class="famname">${esc(f)}</div>` + rows.join("");
+    return `<div class="famname">${esc(f)}${landed && landed.levels && star === null ? " <span class=\"note\">out of reach for this model, even with every rule off</span>" : ""}</div>` + rows.join("");
   }).join("") : "";
   $("dropped").textContent = landed ? "★ marks the level each family's benchmark sits at: the one whose measured pass rate is nearest 25%." :
     fams.length ? "Coming down from the top level." : "Calibration starts when the Qwen job gets its turn on the GPU queue.";
@@ -267,7 +269,7 @@ function render() {
   $("headline").innerHTML = (before ? `<div><b>${pct(before.value)}</b>before, at the calibrated level</div>` : "")
     + (after ? `<div><b>${pct(after.value)}</b>after training</div>` : "")
     + (result ? `<div><b>${result.p < 0.001 ? "<0.001" : result.p}</b>paired p-value</div>` : "");
-  $("dumb").innerHTML = before ? dumbbell(before, after) : `<p class="empty">The benchmark runs after calibration. Nothing has been measured yet.</p>`;
+  $("dumb").innerHTML = before ? dumbbell(before, after) + rounds(evs, before, afters) : `<p class="empty">The benchmark runs after calibration. Nothing has been measured yet.</p>`;
 
   // evidence
   const ev = evs.filter(e => e.kind === "artifact" && (e.stage === "scan" || e.stage === "papers")).slice(-80).reverse();
@@ -287,9 +289,9 @@ function render() {
 }
 
 function dumbbell(b, a) {
-  const names = { headline: "Headline (all families)", harder: "One level harder", control: "Control (other dataset)" };
+  const names = { headline: "Headline (calibrated families)", harder: "One level harder", out_of_reach: "Out of reach (plain job)", control: "Control (other dataset)" };
   const rows = [];
-  for (const k of ["headline", "harder", "control"]) if (b.sets[k] && b.sets[k].n) rows.push([names[k], b.sets[k], a && a.sets[k], true]);
+  for (const k of ["headline", "harder", "out_of_reach", "control"]) if (b.sets[k] && b.sets[k].n) rows.push([names[k], b.sets[k], a && a.sets[k], true]);
   for (const k of Object.keys(b.by_family || {})) rows.push([k, b.by_family[k], a && a.by_family && a.by_family[k], false]);
   const W = 600, rowH = 30, top = 8, left = 220, right = 96, H = top + rows.length * rowH + 26;
   const x = v => left + v * (W - left - right);
@@ -304,6 +306,16 @@ function dumbbell(b, a) {
     s += `<text x="${W - 2}" y="${y + 4}" text-anchor="end" font-size="12" fill="var(--ink-2)">${vb.solved}/${vb.n}${va ? " → " + va.solved + "/" + va.n : ""}</text>`;
   });
   return s + "</svg>";
+}
+
+function rounds(evs, before, afters) {
+  const col = evs.filter(e => e.kind === "metric" && e.name === "collect");
+  if (!col.length) return "";
+  const cell = v => v && v.n ? `${pct(v.rate)} <span class="note">${v.solved}/${v.n}</span>` : "–";
+  const row = (label, c, m) => `<tr><td>${label}</td><td>${c ? `${c.solved}/${c.sampled}` : ""}</td><td>${c ? c.fixed : ""}</td><td>${c ? c.value : ""}</td><td>${m ? cell(m.sets.headline) : "running"}</td><td>${m ? cell(m.sets.harder) : ""}</td></tr>`;
+  return `<table class="rounds"><thead><tr><th>Round</th><th>First tries right</th><th>Right after a fix</th><th>Answers kept</th><th>Headline</th><th>Harder</th></tr></thead><tbody>${
+    row("Before", null, before)}${col.map((c, i) => row(c.round, c, afters[i])).join("")}</tbody></table>
+    <p class="note">Each round samples with the previous round's adapter. A crashed answer gets its own traceback back, never the expected result.</p>`;
 }
 
 document.addEventListener("mousemove", e => {

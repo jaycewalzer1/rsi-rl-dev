@@ -120,14 +120,21 @@ shoe store in `examples/business/` (`rsi/business_gen.py`).
 **The Qwen leg** (`rsi/qwen.py`) runs local Qwen3-VL-8B-Instruct (4-bit MLX, from the
 kokopelli repo) through kokopelli's GPU queue:
 
-1. calibrate: per family, come down from the top level until the pass rate reaches the band
-   (15 to 35%, target 25%); the benchmark sits at that level
+1. calibrate: per family, come down from the top level. Levels are screened with 5 tasks until
+   the first solve; from there every level gets 20, and the descent stops once the pass rate
+   reaches 25%. The benchmark sits at the confirmed level nearest 25%. A family Qwen cannot
+   solve even with every rule off is reported as out of reach and kept out of the headline
 2. benchmark before: held-out rule combinations at that level (headline), one level harder,
-   and a control family from a different dataset; greedy, all-or-nothing
-3. collect: rejection sampling on training combinations around that level; keep only answers
-   the oracle grades fully right. The reward is the only teacher
-4. train: LoRA (r16 on q/k/v/o) with mlx-vlm's SFT trainer, loss on the answer only
+   the plain job of any out-of-reach family, and a control family from a different dataset;
+   greedy, all-or-nothing
+3. collect: sample answers on training combinations from the plain job up to one level above
+   the benchmark. An answer that crashes on the rows the model was shown gets its own
+   traceback back and up to two more goes. Keep only answers the oracle grades fully right.
+   The reward is the only teacher: no reference solution or expected value reaches the model
+4. train: LoRA (r16 on q/k/v/o) with mlx-vlm's SFT trainer on every kept answer, as
+   ticket -> final correct code, loss on the answer only
 5. benchmark after: the same held-out tasks with the adapter, with a paired exact test
+6. repeat 3 to 5 (3 rounds by default); each round samples with the previous round's adapter
 
 Benchmark rule combinations are never trained on, so "after" measures transfer to rule
 stacks the model never saw graded. `runs/<run>/qwen/REPORT.md` names model, weights and

@@ -1,17 +1,25 @@
 """Post-train a local Qwen on a run's task families and measure it before and after.
 
     calibrate      per family, start at the top level (every rule on, "impossible") and come
-                   down until Qwen's pass rate reaches the band (RSI_BAND_LOW..HIGH, target 25%).
-                   That level, L*, is where the benchmark sits.
+                   down. Levels are screened with a few tasks until the first solve; from there
+                   every level gets 20 tasks, and the descent stops once the pass rate reaches
+                   the target (RSI_TARGET_RATE, 25%). The level nearest the target, L*, is where
+                   the benchmark sits. A family Qwen cannot solve even with every rule off is
+                   reported as out of reach and kept out of the headline.
     bench before   held-out tasks, greedy decoding, all-or-nothing on every data slice:
-                     headline  L* in every family            (the ~25% starting point)
-                     harder    L*+1 in every family          (does the curve move, not one point)
-                     control   a family from a DIFFERENT dataset nothing here trains on
-    collect        rejection sampling on TRAINING rule combinations at L*-1..L*+1: k samples
-                   per task, keep only answers the oracle grades fully right. The reward is the
-                   only teacher; no reference solution is ever shown to the model.
-    train          LoRA on the kept answers (mlx-vlm SFT trainer, loss on the answer only)
+                     headline      L* in every calibrated family   (the ~25% starting point)
+                     harder        L*+1 in the same families       (does the curve move)
+                     out_of_reach  level 0 of families that never reached the band
+                     control       a family from a DIFFERENT dataset nothing here trains on
+    collect        on TRAINING rule combinations from level 0 up to L*+1: k samples per task.
+                   An answer that crashes on the rows the model was shown gets its own traceback
+                   back and another go (twice at most). Only answers the oracle grades fully
+                   right are kept. The reward is the only teacher: no reference solution and no
+                   expected value is ever shown to the model.
+    train          LoRA on every answer kept so far, each as ticket -> final correct code
+                   (mlx-vlm SFT trainer, loss on the answer only), from the base weights
     bench after    the same held-out tasks with the adapter; paired test against before
+    (collect, train and bench after repeat per round; round N samples with round N-1's adapter)
 
 Benchmark rule combinations are never trained on (family.split_combos), and every answer is
 graded on slices of the business's data the model was never shown rows from.
@@ -45,9 +53,12 @@ BASE = Path(os.environ.get("RSI_QWEN_WEIGHTS", KOKO / "models" / "Qwen3-VL-8B-In
 MODEL_ID = "Qwen/Qwen3-VL-8B-Instruct"
 SYSTEM = "You are a careful Python engineer. Follow every rule in the ticket exactly."
 LORA = {"rank": 16, "alpha": 32.0, "dropout": 0.0, "targets": ["q_proj", "k_proj", "v_proj", "o_proj"],
-        "learning_rate": 1e-4, "batch_size": 1, "max_seq_length": 6144, "epochs": 2, "max_rows": 320, "seed": 0}
+        "learning_rate": 1e-4, "batch_size": 1, "max_seq_length": 6144, "epochs": 3, "max_rows": 400, "seed": 0}
 # the bar this repo sets for "post-training worked"; not a lab standard
 TARGET_GAIN, TARGET_P = 0.20, 0.05
+CONFIRM = 20  # tasks behind a calibration level before it can be chosen
+FIX = ("Running your function on the sample tables raised:\n\n{trace}\n\n"
+       "Fix it. Reply with the complete corrected function in one ```python block.")
 
 
 class Qwen:
@@ -61,13 +72,13 @@ class Qwen:
         return {"id": MODEL_ID, "weights": str(self.base), "quantization": q,
                 "adapter": str(self.adapter) if self.adapter else None}
 
-    def _fmt(self, user: str) -> str:
+    def _fmt(self, chat: str | list[dict]) -> str:
         from mlx_vlm.prompt_utils import apply_chat_template
-        msgs = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}]
-        return apply_chat_template(self.processor, self.model.config, msgs, num_images=0)
+        turns = [{"role": "user", "content": chat}] if isinstance(chat, str) else chat
+        return apply_chat_template(self.processor, self.model.config, [{"role": "system", "content": SYSTEM}, *turns], num_images=0)
 
-    def generate(self, prompts: list[str], temperature: float, max_tokens: int = 2000, batch: int = 8):
-        """Yields (index, text) as chunks finish."""
+    def generate(self, prompts: list[str | list[dict]], temperature: float, max_tokens: int = 2000, batch: int = 8):
+        """Yields (index, text) as chunks finish. A prompt is the user's text or a list of turns."""
         import mlx.core as mx
         from mlx_vlm import batch_generate, generate
         from mlx_vlm.sample_utils import make_sampler
@@ -130,6 +141,50 @@ def attempt(qwen: Qwen, ctx: Ctx, tasks: list[F.Task], *, samples: int, temperat
     return rows
 
 
+def repair(qwen: Qwen, ctx: Ctx, rows: list[dict], *, turns: int, temperature: float, stage: str, log: Path) -> list[dict]:
+    """Give each crashed answer its own traceback and another go; returns the new rows.
+
+    A crash is whatever running the answer on the shown slice raises (family.crash_on_shown).
+    Answers that run but are wrong get nothing back: telling the model how would leak the oracle."""
+    have = {(r["id"], r["sample"], r["turn"]): r for r in read_jsonl(log)}
+    out, cur = [], rows
+    for turn in range(1, turns + 1):
+        todo, nxt = [], []
+        for r in cur:
+            if r["solved"]:
+                continue
+            if (r["id"], r["sample"], turn) in have:
+                nxt.append(have[(r["id"], r["sample"], turn)])
+                continue
+            task = F.Task(r["family"], tuple(r["rules"]), r["params"])
+            trace = F.crash_on_shown(task, r["answer"], ctx.dbs[r["family"]][0])
+            if trace:
+                todo.append((r, task, trace))
+        started = time.time()
+        if todo:
+            chats = [[{"role": "user", "content": F.prompt(ctx.fams[t.family], t, ctx.dbs[t.family][0])},
+                      {"role": "assistant", "content": r["answer"]},
+                      {"role": "user", "content": FIX.format(trace=trace)}] for r, t, trace in todo]
+            with log.open("a") as f:
+                for i, text in qwen.generate(chats, temperature):
+                    r, t, trace = todo[i]
+                    fam = ctx.fams[t.family]
+                    g = F.score(fam, t, text, ctx.dbs[t.family])
+                    row = {**t.as_dict(fam), "sample": r["sample"], "turn": turn, "temperature": temperature,
+                           "crash": trace.splitlines()[-1][:200], **g, "answer": text}
+                    f.write(json.dumps(row) + "\n")
+                    f.flush()
+                    nxt.append(row)
+                    events.emit("work", stage=stage, agent=f"qwen-{t.id}-{r['sample']}-fix{turn}", role="qwen",
+                                msg=f"{t.id} fix {turn} after {row['crash'][:50]}: {'SOLVED' if g['solved'] else 'fail'}",
+                                level=t.level, family=t.family, solved=g["solved"])
+        print(f"{stage} fix {turn}: {sum(r['solved'] for r in nxt)}/{len(nxt)} crashed answers now solved"
+              + (f" ({len(todo)} new in {time.time() - started:.0f} s)" if todo else ""), flush=True)
+        out += nxt
+        cur = nxt
+    return out
+
+
 def rate(rows: list[dict]) -> dict:
     k, n = sum(r["solved"] for r in rows), len(rows)
     lo, hi = wilson(k, n)
@@ -148,11 +203,20 @@ def mcnemar(before: list[dict], after: list[dict]) -> dict:
 
 # ---------------------------------------------------------------- calibrate
 
-def calibrate(qwen: Qwen, ctx: Ctx, fam: F.Family, out: Path, n: int = 5) -> dict:
-    """Come down from the top level until the pass rate reaches the band; return L*."""
+def pick_level(measured: dict[int, dict], confirm: int = CONFIRM) -> int | None:
+    """The confirmed level nearest the target, a level inside the band first; None if no
+    confirmed level has a solve (the family is out of this model's reach)."""
+    solid = {l: m for l, m in measured.items() if m["n"] >= confirm and m["solved"] >= 1}
+    if not solid:
+        return None
+    return min(solid, key=lambda l: (not CONFIG.band_low <= solid[l]["rate"] <= CONFIG.band_high,
+                                     abs(solid[l]["rate"] - CONFIG.target_rate), -l))
+
+
+def calibrate(qwen: Qwen, ctx: Ctx, fam: F.Family, out: Path, n: int = 5, confirm: int = CONFIRM) -> dict:
+    """Come down from the top level until the pass rate reaches the target; return L*."""
     db = ctx.dbs[fam.id][0]
     top = len(fam.rules)
-    order = [l for l in dict.fromkeys([top, top - 2, top - 4, *range(top - 5, -1, -1)]) if l >= 0]
     measured: dict[int, dict] = {}
 
     def measure(level: int, count: int) -> dict:
@@ -164,52 +228,63 @@ def calibrate(qwen: Qwen, ctx: Ctx, fam: F.Family, out: Path, n: int = 5) -> dic
                     value=measured[level]["rate"], n=len(rows), msg=f"{fam.id} level {level}: {measured[level]['solved']}/{len(rows)}")
         return measured[level]
 
-    hit = None
-    for level in order:
-        m = measure(level, n)
-        if m["solved"] >= 1:
-            m = measure(level, 2 * n)
-            if m["rate"] >= CONFIG.band_low:
-                hit = level
-                break
-    if hit is not None and hit + 1 <= top and (hit + 1 not in measured or measured[hit + 1]["n"] < 2 * n):
-        measure(hit + 1, 2 * n)  # a skipped level may be the one nearer the target
-    solid = {l: m for l, m in measured.items() if m["n"] >= 2 * n and m["solved"] >= 1}
-    if solid:
-        level = min(solid, key=lambda l: (abs(solid[l]["rate"] - CONFIG.target_rate), -l))
-        note = "level whose measured pass rate is nearest the target"
-    else:
-        level, note = 0, "no level reached the band: Qwen solved nothing, or too little, even with every rule off"
+    seen = False  # screening jumps two levels at a time near the top; after the first solve every level is confirmed
+    for level in [l for l in dict.fromkeys([top, top - 2, top - 4, *range(top - 5, -1, -1)]) if l >= 0]:
+        m = measure(level, confirm if seen else n)
+        if not seen and m["solved"]:
+            seen = True
+            m = measure(level, confirm)
+            if m["rate"] >= CONFIG.band_low and level + 1 <= top:
+                measure(level + 1, confirm)  # the level jumped over may be the one nearer the target
+        if seen and m["rate"] >= CONFIG.target_rate:
+            break
+    level = pick_level(measured, confirm)
+    note = ("level whose measured pass rate is nearest the target" if level is not None else
+            "out of reach: Qwen solved nothing, or too little, even with every rule off")
     return {"family": fam.id, "level": level, "note": note,
             "curve": [{"level": l, **m} for l, m in sorted(measured.items(), reverse=True)]}
 
 
 # ---------------------------------------------------------------- collect and train
 
-def collect(qwen: Qwen, ctx: Ctx, plan: dict[str, list[int]], out: Path, rnd: int, n: int, k: int) -> list[dict]:
-    events.emit("stage_start", stage="collect", msg=f"round {rnd}: {k} samples per training task, keep graded-correct answers")
-    tasks = [t for fid, levels in plan.items() for lvl in levels
-             for t in F.make_tasks(ctx.fams[fid], lvl, n, "train", 3000 + rnd, ctx.dbs[fid][0])]
-    rows = attempt(qwen, ctx, tasks, samples=k, temperature=0.8, stage="collect", log=out / f"collect_r{rnd}.jsonl")
+def collect(qwen: Qwen, ctx: Ctx, plan: dict[str, dict], out: Path, rnd: int, k: int, fixes: int = 2) -> list[dict]:
+    """plan: family -> {"levels": [...], "n": tasks per level}. Returns the graded-correct answers as training rows."""
+    events.emit("stage_start", stage="collect", msg=f"round {rnd}: {k} samples per training task, crashed answers get {fixes} fixes, keep graded-correct answers")
+    tasks = []
+    for fid, want in plan.items():
+        fam = ctx.fams[fid]
+        for lvl in want["levels"]:
+            pool = "train" if F.split_combos(fam)[lvl]["train"] else "bench"  # level 0 has one combination; the plan only lists it when no benchmark uses it
+            tasks += F.make_tasks(fam, lvl, want["n"], pool, 3000 + rnd, ctx.dbs[fid][0])
+    first = attempt(qwen, ctx, tasks, samples=k, temperature=0.8, stage="collect", log=out / f"collect_r{rnd}.jsonl")
+    fixed = repair(qwen, ctx, first, turns=fixes, temperature=0.8, stage="collect", log=out / f"collect_r{rnd}_fix.jsonl")
     kept, per_task = [], defaultdict(set)
-    for r in rows:
+    for r in first + fixed:
         code = F.extract_code(r["answer"]).strip()
-        if r["solved"] and code not in per_task[r["id"]] and len(per_task[r["id"]]) < 2:
+        if r["solved"] and code not in per_task[r["id"]] and len(per_task[r["id"]]) < 3:
             per_task[r["id"]].add(code)
             fam = ctx.fams[r["family"]]
             task = F.Task(fam.id, tuple(r["rules"]), r["params"])
             kept.append({"messages": [{"role": "system", "content": SYSTEM},
                                       {"role": "user", "content": F.prompt(fam, task, ctx.dbs[fam.id][0])},
                                       {"role": "assistant", "content": f"```python\n{code}\n```"}],
-                         "task": r["id"], "family": fam.id, "level": r["level"]})
+                         "task": r["id"], "family": fam.id, "level": r["level"], "rules": list(r["rules"]), "fixed": bool(r.get("turn"))})
     by = defaultdict(list)
-    for r in rows:
+    for r in first:
         by[f"{r['family']} L{r['level']}"].append(r)
-    summary = {"model": qwen.describe(), "plan": plan, "sampled": len(rows), "solved": sum(r["solved"] for r in rows),
+    covered = defaultdict(set)
+    for row in kept:
+        covered[row["family"]] |= set(row["rules"])
+    summary = {"model": qwen.describe(), "plan": plan, "sampled": len(first), "solved": sum(r["solved"] for r in first),
+               "fix_turns": len(fixed), "solved_after_fix": sum(r["solved"] for r in fixed),
                "kept": len(kept), "tasks": len(tasks), "tasks_with_a_solve": len(per_task),
-               "by_family_level": {key: rate(v) for key, v in sorted(by.items())}}
+               "first_try_by_family_level": {key: rate(v) for key, v in sorted(by.items())},
+               "rules_with_a_kept_answer": {fid: f"{len(covered[fid])}/{len(ctx.fams[fid].rules)}" for fid in plan}}
     write_json(out / f"collect_r{rnd}.json", summary)
-    events.emit("stage_end", stage="collect", msg=f"{len(kept)} graded-correct answers kept from {len(rows)} samples", kept=len(kept))
+    write_json(out / f"kept_r{rnd}.json", kept)
+    events.emit("metric", stage="collect", name="collect", round=rnd, value=len(kept), sampled=len(first), solved=summary["solved"],
+                fixed=summary["solved_after_fix"], msg=f"round {rnd}: {summary['solved']}/{len(first)} first tries right, {summary['solved_after_fix']} more after a fix")
+    events.emit("stage_end", stage="collect", msg=f"{len(kept)} graded-correct answers kept from {len(first)} samples and {len(fixed)} fixes", kept=len(kept))
     return kept
 
 
@@ -224,6 +299,7 @@ def train(qwen: Qwen, rows: list[dict], adapter_dir: Path) -> dict:
         rows = rng.sample(rows, LORA["max_rows"])
     events.emit("stage_start", stage="train", msg=f"LoRA r{LORA['rank']} on {len(rows)} answers x {LORA['epochs']} epochs")
     adapter_dir.mkdir(parents=True, exist_ok=True)
+    mx.set_cache_limit(2 * 1024 ** 3)  # the trainer's buffer cache grew to 32 GB on a 36 GB Mac without this
     mx.random.seed(LORA["seed"])
     data = [{"messages": r["messages"]} for r in rows] * LORA["epochs"]
     rng.shuffle(data)
@@ -269,10 +345,16 @@ def control_ctx(run_dir: Path, ctx: Ctx) -> F.Family:
     return fam
 
 
-def bench_sets(ctx: Ctx, fams: list[F.Family], control: F.Family, levels: dict[str, int], n: int) -> dict[str, list[F.Task]]:
-    sets: dict[str, list[F.Task]] = {"headline": [], "harder": [], "control": []}
+SETS = ("headline", "harder", "out_of_reach", "control")
+
+
+def bench_sets(ctx: Ctx, fams: list[F.Family], control: F.Family, levels: dict[str, int | None], n: int) -> dict[str, list[F.Task]]:
+    sets: dict[str, list[F.Task]] = {name: [] for name in SETS}
     for fam in fams:
         db, top, lvl = ctx.dbs[fam.id][0], len(fam.rules), levels[fam.id]
+        if lvl is None:
+            sets["out_of_reach"] += F.make_tasks(fam, 0, max(4, n // 2), "bench", 1000, db)
+            continue
         sets["headline"] += F.make_tasks(fam, lvl, n, "bench", 1000, db)
         if lvl + 1 <= top:
             sets["harder"] += F.make_tasks(fam, lvl + 1, max(4, n // 2), "bench", 1000, db)
@@ -281,11 +363,26 @@ def bench_sets(ctx: Ctx, fams: list[F.Family], control: F.Family, levels: dict[s
     return sets
 
 
+def train_plan(fams: list[F.Family], levels: dict[str, int | None], n: int) -> dict[str, dict]:
+    """Training levels per family: from the plain job up to one above the benchmark level, never
+    a rule combination a benchmark uses. An out-of-reach family gets a few level-1 tasks, in case
+    what the model learns on the others carries over."""
+    plan = {}
+    for fam in fams:
+        lvl, split = levels[fam.id], F.split_combos(fam)
+        if lvl is None:
+            plan[fam.id] = {"levels": [1], "n": max(2, n // 2)}
+            continue
+        want = [l for l in range(1, min(lvl + 1, len(fam.rules)) + 1) if split[l]["train"]]
+        plan[fam.id] = {"levels": ([0] if lvl >= 1 else []) + (want or [1, 2]), "n": n}
+    return plan
+
+
 def benchmark(qwen: Qwen, ctx: Ctx, sets: dict[str, list[F.Task]], tag: str, out: Path) -> dict:
     events.emit("stage_start", stage=f"bench_{tag}", msg=f"held-out benchmark, greedy: " + ", ".join(f"{k} {len(v)}" for k, v in sets.items()))
     res = {"model": qwen.describe(), "sets": {}, "rows": {}}
     for name, tasks in sets.items():
-        rows = attempt(qwen, ctx, tasks, samples=1, temperature=0.0, stage=f"bench_{tag}", log=out / f"bench_{tag}.jsonl")
+        rows = attempt(qwen, ctx, tasks, samples=1, temperature=0.0, stage=f"bench_{tag}", log=out / f"bench_{tag}.jsonl") if tasks else []
         by_fam = defaultdict(list)
         for r in rows:
             by_fam[f"{r['family']} L{r['level']}"].append(r)
@@ -301,7 +398,7 @@ def benchmark(qwen: Qwen, ctx: Ctx, sets: dict[str, list[F.Task]], tag: str, out
     h = res["sets"]["headline"]
     events.emit("metric", stage=f"bench_{tag}", name=f"bench_{tag}", value=h["rate"], sets={k: {x: v[x] for x in ("solved", "n", "rate", "wilson95")} for k, v in res["sets"].items()},
                 by_family=h["by_family"], msg=f"{tag}: headline {h['solved']}/{h['n']}")
-    events.emit("stage_end", stage=f"bench_{tag}", msg=f"headline {h['rate']:.0%} ({h['solved']}/{h['n']})")
+    events.emit("stage_end", stage=f"bench_{tag}", msg=f"headline {h['solved']}/{h['n']}" + (f" ({h['rate']:.0%})" if h["n"] else ""))
     return res
 
 
@@ -333,29 +430,34 @@ def run(run_dir: Path, *, bench_n: int, cal_n: int, collect_n: int, k: int, roun
     control = control_ctx(run_dir, ctx)
     report: dict = {"started": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "dataset": json.loads((run_dir / "business" / "catalog.json").read_text())["source"],
                     "slices": len(dbs), "families": [f.id for f in fams], "control": control.id,
-                    "settings": {"bench_n": bench_n, "cal_n": cal_n, "collect_n": collect_n, "k": k, "rounds": rounds,
+                    "settings": {"bench_n": bench_n, "cal_n": cal_n, "confirm_n": CONFIRM, "collect_n": collect_n, "k": k, "rounds": rounds,
                                  "target_rate": CONFIG.target_rate, "band": [CONFIG.band_low, CONFIG.band_high]}}
     events.emit("stage_start", stage="qwen", msg=f"Qwen leg on {len(fams)} families: " + ", ".join(f.id for f in fams))
 
+    def save():
+        write_json(out / "report.json", report)
+        (out / "REPORT.md").write_text(markdown(report))
+
     qwen = Qwen()
     report["model"] = qwen.describe()
-    events.emit("stage_start", stage="calibrate", msg="start impossible (every rule on), come down until the band")
+    events.emit("stage_start", stage="calibrate", msg="start impossible (every rule on), come down until the target")
     report["calibrate"] = {fam.id: calibrate(qwen, ctx, fam, out, cal_n) for fam in fams}
     write_json(out / "calibrate.json", report["calibrate"])
     levels = {fid: c["level"] for fid, c in report["calibrate"].items()}
-    events.emit("stage_end", stage="calibrate", msg="benchmark levels: " + ", ".join(f"{f} L{l}" for f, l in levels.items()), levels=levels)
+    events.emit("stage_end", stage="calibrate", levels=levels,
+                msg="benchmark levels: " + ", ".join(f"{f} " + (f"L{l}" if l is not None else "out of reach") for f, l in levels.items()))
 
     sets = bench_sets(ctx, fams, control, levels, bench_n)
     report["before"] = benchmark(qwen, ctx, sets, "before", out)
-    plan = {}
-    for fam in fams:
-        trainable = [l for l in fam.levels if F.split_combos(fam)[l]["train"]]
-        want = [l for l in (levels[fam.id] - 1, levels[fam.id], levels[fam.id] + 1) if l in trainable]
-        plan[fam.id] = want or sorted(trainable)[:2]
+    save()
+    if not sets["headline"]:
+        report["stopped"] = "no family reached the band, so there is no headline to train for"
+        rounds = 0
+    plan = train_plan(fams, levels, collect_n)
 
     kept: list[dict] = []
     for rnd in range(1, rounds + 1):
-        kept += collect(qwen, ctx, plan, out, rnd, collect_n, k)
+        kept += collect(qwen, ctx, plan, out, rnd, k)
         report[f"collect_r{rnd}"] = json.loads((out / f"collect_r{rnd}.json").read_text())
         if not kept:
             report["stopped"] = "no graded-correct answers to train on"
@@ -367,7 +469,7 @@ def run(run_dir: Path, *, bench_n: int, cal_n: int, collect_n: int, k: int, roun
         if (adapter / "run.json").exists() and json.loads((adapter / "run.json").read_text()).get("finished"):
             report[f"train_r{rnd}"] = json.loads((adapter / "run.json").read_text())
         else:
-            qwen = Qwen()
+            qwen = Qwen()  # every round trains from the base weights on all answers kept so far
             report[f"train_r{rnd}"] = train(qwen, kept, adapter)
             del qwen
             mx.clear_cache()
@@ -375,12 +477,10 @@ def run(run_dir: Path, *, bench_n: int, cal_n: int, collect_n: int, k: int, roun
         report[f"after_r{rnd}"] = benchmark(qwen, ctx, sets, f"after_r{rnd}", out)
         report[f"compare_r{rnd}"] = compare(report["before"], report[f"after_r{rnd}"])
         report["last_round"] = rnd
-        write_json(out / "report.json", report)
-        (out / "REPORT.md").write_text(markdown(report))
+        save()
 
     report["finished"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
-    write_json(out / "report.json", report)
-    (out / "REPORT.md").write_text(markdown(report))
+    save()
     last = report.get("last_round")
     if last:
         c = report[f"compare_r{last}"]["headline"]
@@ -389,6 +489,55 @@ def run(run_dir: Path, *, bench_n: int, cal_n: int, collect_n: int, k: int, roun
     events.emit("stage_end", stage="qwen", msg="Qwen leg done" if last else "Qwen leg stopped before training")
     print((out / "REPORT.md").read_text())
     return report
+
+
+def markdown(r: dict) -> str:
+    m = r["model"]
+    last = r.get("last_round")
+    pct = lambda v: f"{v['solved']}/{v['n']} ({v['rate']:.0%}, 95% {v['wilson95'][0]:.0%}-{v['wilson95'][1]:.0%})"
+    lines = ["# Qwen post-training on business-data tasks", "",
+             f"Model: {m['id']}, weights `{m['weights']}` (quantization {m['quantization']}).",
+             f"Dataset: `{r['dataset']}`, {r['slices']} disjoint slices; answers are graded on all of them.",
+             f"Task families: {', '.join(r['families'])}. Control (different dataset, never trained on): {r['control']}.", "",
+             "## Where the benchmark sits", "",
+             f"Coming down from the top level (every rule on) until the pass rate reaches {r['settings']['target_rate']:.0%}:", ""]
+    for fid, c in r["calibrate"].items():
+        where = f"benchmark at level {c['level']}" if c["level"] is not None else "no benchmark level"
+        lines.append(f"- {fid}: " + ", ".join(f"L{x['level']} {x['solved']}/{x['n']}" for x in c["curve"]) + f" -> {where} ({c['note']})")
+    if not last:
+        b = r["before"]["sets"]
+        lines += ["", "## Before", ""] + [f"- {k}: {pct(v)}" for k, v in b.items() if v["n"]]
+        lines += ["", f"Training has not finished: {r.get('stopped', 'still running')}."]
+        return "\n".join(lines) + "\n"
+    a, b, c = r[f"after_r{last}"], r["before"], r[f"compare_r{last}"]
+    lines += ["", f"## Result after round {last}", "",
+              f"After = the same weights + LoRA `{a['model']['adapter']}`. Held-out rule combinations, greedy decoding, all-or-nothing.", "",
+              "| set | before | after | gained | lost | paired p |", "|---|---|---|---|---|---|"]
+    for name in SETS:
+        bb, aa, cc = b["sets"][name], a["sets"][name], c[name]
+        if bb["n"]:
+            lines.append(f"| {name} | {pct(bb)} | {pct(aa)} | {cc['gained']} | {cc['lost']} | {cc['p']} |")
+    t = c["target"]
+    lines += ["", f"Bar set by this repo (not a lab standard): headline gain of at least {t['gain_at_least']:.0%} points with paired p below {t['p_below']}: "
+              + ("**met**." if t["met"] else "**not met**."), "", "By family (headline):", ""]
+    for fam_level, bb in b["sets"]["headline"]["by_family"].items():
+        aa = a["sets"]["headline"]["by_family"].get(fam_level, {})
+        lines.append(f"- {fam_level}: {bb['solved']}/{bb['n']} -> {aa.get('solved', '-')}/{aa.get('n', '-')}")
+    lines += ["", "Why answers failed (headline), before -> after:", "",
+              f"- before: {b['sets']['headline']['failures']}", f"- after: {a['sets']['headline']['failures']}", "",
+              "## Round by round", "", "| round | first tries right | right after a fix | answers trained on | rules covered | headline | harder | control |", "|---|---|---|---|---|---|---|---|",
+              f"| before | | | | | {pct(b['sets']['headline'])} | " + " | ".join(pct(b["sets"][x]) if b["sets"][x]["n"] else "-" for x in ("harder", "control")) + " |"]
+    for rnd in range(1, last + 1):
+        col, t, s = r[f"collect_r{rnd}"], r[f"train_r{rnd}"], r[f"after_r{rnd}"]["sets"]
+        lines.append(f"| {rnd} | {col['solved']}/{col['sampled']} | {col['solved_after_fix']}/{col['fix_turns']} | {t['rows']} | "
+                     + ", ".join(f"{v}" for v in col["rules_with_a_kept_answer"].values()) + f" | {pct(s['headline'])} | "
+                     + " | ".join(pct(s[x]) if s[x]["n"] else "-" for x in ("harder", "control")) + " |")
+    lines += ["", "Each round samples with the previous round's adapter and trains from the base weights on every answer kept so far.", "", "## Training", ""]
+    for rnd in range(1, last + 1):
+        t = r[f"train_r{rnd}"]
+        lines.append(f"- round {rnd}: {t['rows']} answers ({t['rows_by_family']}), {t['steps']} steps, loss {t['first_loss']} -> {t['last_loss']}, "
+                     f"{t['seconds'] / 60:.0f} min, peak {t['peak_memory_gb']} GB")
+    return "\n".join(lines) + "\n"
 
 
 def markdown(r: dict) -> str:
@@ -435,7 +584,7 @@ def markdown(r: dict) -> str:
 
 
 def smoke(run_dir: Path) -> None:
-    """A few answers per family at the easy end, batch path included, to see where Qwen stands."""
+    """A few answers per family at the easy end, batch and fix paths included, to see where Qwen stands."""
     out = run_dir / "qwen_smoke"
     out.mkdir(parents=True, exist_ok=True)
     ctx = Ctx()
@@ -444,22 +593,24 @@ def smoke(run_dir: Path) -> None:
     for fam in fams:
         ctx.add(fam, dbs)
     qwen = Qwen()
-    tasks = [t for fam in fams for lvl in (0, 1, 2) for t in F.make_tasks(fam, lvl, 2, "bench", 5, dbs[0])]
+    tasks = [t for fam in fams for lvl in (0, 1) for t in F.make_tasks(fam, lvl, 1, "bench", 5, dbs[0])]
     rows = attempt(qwen, ctx, tasks, samples=1, temperature=0.0, stage="smoke", log=out / "smoke.jsonl")
     for r in rows:
         print(f"{r['id']}: {'SOLVED' if r['solved'] else 'fail'} keys {r['key_share']} {r['error'][:90]}", flush=True)
-    rows = attempt(qwen, ctx, tasks[:2], samples=3, temperature=0.8, stage="smoke", log=out / "smoke_sampled.jsonl")
+    rows = attempt(qwen, ctx, tasks[:2], samples=4, temperature=0.8, stage="smoke", log=out / "smoke_sampled.jsonl")
     print("sampled:", [r["solved"] for r in rows], flush=True)
+    for r in repair(qwen, ctx, rows, turns=1, temperature=0.8, stage="smoke", log=out / "smoke_fix.jsonl"):
+        print(f"fix of {r['id']} after {r['crash'][:60]}: {'SOLVED' if r['solved'] else 'fail'} {r['error'][:80]}", flush=True)
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--run", required=True, help="run folder under runs/ holding business/ and families.json")
     ap.add_argument("--bench-n", type=int, default=20, help="held-out headline tasks per family")
-    ap.add_argument("--cal-n", type=int, default=5, help="calibration tasks per level (doubled at a level with a solve)")
+    ap.add_argument("--cal-n", type=int, default=5, help="screening tasks per level; from the first solve down every level gets 20")
     ap.add_argument("--collect-n", type=int, default=6, help="training tasks per level per family per round")
     ap.add_argument("--k", type=int, default=4, help="samples per training task")
-    ap.add_argument("--rounds", type=int, default=1)
+    ap.add_argument("--rounds", type=int, default=3)
     ap.add_argument("--smoke", action="store_true", help="a few answers per family and exit")
     a = ap.parse_args()
     if a.smoke:

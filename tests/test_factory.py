@@ -3,7 +3,7 @@ import json
 import pytest
 
 from rsi import business_gen, events, family as F, family_check, gate, intake, scan_hn
-from rsi.qwen import mcnemar
+from rsi.qwen import mcnemar, pick_level, train_plan
 
 
 def raw(seed=7, n=900):
@@ -116,6 +116,31 @@ def test_mcnemar_counts_only_changed_tasks():
     after = [{"id": i, "solved": i < 8} for i in range(10)]
     assert mcnemar(before, after) == {"gained": 6, "lost": 0, "p": 0.03125}
     assert mcnemar(before, before)["p"] == 1.0
+
+
+def test_crash_feedback_is_the_candidates_own_traceback(business, shoe):
+    db = F.load_dbs(business)[0]
+    t = F.Task(shoe.id, (), {"store_id": "S02"})
+    trace = F.crash_on_shown(t, "```python\ndef solve(db, params):\n    day = '2026-01-02'\n    return {'x': day - 1}\n```", db)
+    assert trace.splitlines()[0].strip() == "line 3, in solve" and trace.endswith("'str' and 'int'")
+    assert "cand.py" not in trace
+    assert F.crash_on_shown(t, "```python\ndef solve(db, params):\n    return {'x': 1}\n```", db) == ""  # wrong but runs: no feedback
+
+
+def test_benchmark_level_is_the_confirmed_one_nearest_the_target():
+    m = lambda k, n: {"solved": k, "n": n, "rate": k / n}
+    assert pick_level({4: m(2, 20), 3: m(9, 20), 2: m(3, 5)}) == 4  # 10% is nearer 25% than 45%; 5 tasks confirm nothing
+    assert pick_level({4: m(2, 20), 3: m(4, 20), 2: m(9, 20)}) == 3  # a level inside the band wins
+    assert pick_level({1: m(0, 20), 0: m(0, 5)}) is None
+
+
+def test_training_never_uses_a_benchmark_combination(shoe):
+    split = F.split_combos(shoe)
+    plan = train_plan([shoe], {shoe.id: 2}, 6)[shoe.id]
+    assert plan["levels"] == [0, 1, 2, 3]  # level 0 is free to train on: the benchmark sits at 2 and 3
+    assert train_plan([shoe], {shoe.id: 0}, 6)[shoe.id]["levels"] == [1]
+    assert train_plan([shoe], {shoe.id: None}, 6)[shoe.id] == {"levels": [1], "n": 3}
+    assert all(split[l]["train"] for l in plan["levels"] if l)
 
 
 def test_swarm_logs_every_agent(tmp_path):

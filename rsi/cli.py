@@ -53,7 +53,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--only", help="comma list of stages to (re)run: intake,modes,author,export,gate")
     p = sub.add_parser("qwen")
     p.add_argument("--run", required=True)
-    p.add_argument("--rounds", type=int, default=1)
+    p.add_argument("--rounds", type=int, default=3)
     p.add_argument("--k", type=int, default=4)
     p.add_argument("--bench-n", type=int, default=20)
     p.add_argument("--collect-n", type=int, default=6)
@@ -120,8 +120,8 @@ def _factory(a) -> int:
         from .qwen import KOKO
         root = Path(__file__).resolve().parent.parent
         what = "a few answers per family (smoke)" if a.smoke else (
-            "calibrated from the top level down to the 25% band, benchmarked on held-out tasks, LoRA "
-            "post-trained on graded-correct samples, benchmarked again")
+            "calibrated from the top level down to a 25% pass rate, benchmarked on held-out tasks, LoRA "
+            "post-trained over several rounds on its own graded-correct answers, benchmarked after each round")
         cmd = ["python3", str(KOKO / "kokopelli" / "ops" / "gpu.py"), "run", "--name", f"rsi_qwen_{a.run}" + ("_smoke" if a.smoke else ""),
                "--priority", "50", "--gb", "18", "--cwd", str(root),
                "--about", f"rsi-rl-dev Qwen leg on run {a.run}: Qwen3-VL-8B-Instruct 4-bit on task families written for "

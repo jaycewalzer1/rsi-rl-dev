@@ -123,14 +123,14 @@ class Task:
                 "modes": [fam.mode_of(r) for r in self.rules], "params": self.params}
 
 
-def ticket(fam: Family, task: Task) -> str:
+def ticket(fam: Family, task: Task, harbor: bool = False) -> str:
+    """The ticket. `harbor` words the signature pin for a solver working in the task's container."""
     rules = "\n".join(f"- {r['present'] if r['id'] in task.rules else r['absent']}" for r in fam.rules)
-    pins = "\n".join(f"- {p}" for p in [
-        "Signature: `def solve(db, params) -> dict`. `db` maps table name to a list of row dicts; "
-        f"`params` is a dict, e.g. `{json.dumps(task.params)}`.",
-        *fam.pins,
-        "Standard library only.",
-    ])
+    sig = (f"`def solve(db, params) -> dict` in `/app/{ENTRY}`; `db` maps table name (JSON files in `/app/data`) "
+           f"to row dicts; `params` here is `{json.dumps(task.params)}`." if harbor else
+           "Signature: `def solve(db, params) -> dict`. `db` maps table name to a list of row dicts; "
+           f"`params` is a dict, e.g. `{json.dumps(task.params)}`.")
+    pins = "\n".join(f"- {p}" for p in [sig, *fam.pins, "Standard library only."])
     return f"{fam.background}\n\nRules:\n{rules}\n\nPins:\n{pins}"
 
 
@@ -199,6 +199,7 @@ _params = json.load(open(sys.argv[2]))
 _out = solve(_db, _params)
 print("\\n" + json.dumps({{str(k): v for k, v in (_out or {{}}).items()}}))
 """
+HARNESS_LINES = HARNESS[:HARNESS.index("{code}")].count("\n")  # lines the harness puts above the candidate
 _DB_FILES: dict[int, Path] = {}
 _TMP = None
 _SANDBOX: list[str] | None = None
@@ -233,7 +234,8 @@ def extract_code(text: str) -> str:
     return cut.group(1) if cut else text
 
 
-def run_candidate(code: str, db: dict, params: dict, timeout: int = 30) -> tuple[dict | None, str]:
+def _run(code: str, db: dict, params: dict, timeout: int = 30) -> tuple[dict | None, str, str]:
+    """(answer, one-line error, traceback tail). Line numbers in the tail are the candidate's own."""
     with tempfile.TemporaryDirectory(prefix="rsi-cand-") as tmp:
         tmp = Path(tmp)
         (tmp / "params.json").write_text(json.dumps(params))
@@ -242,14 +244,30 @@ def run_candidate(code: str, db: dict, params: dict, timeout: int = 30) -> tuple
             p = subprocess.run([*_sandbox(), sys.executable, "-I", str(tmp / "cand.py"), str(_db_file(db)), str(tmp / "params.json")],
                                capture_output=True, text=True, timeout=timeout, cwd=tmp)
         except subprocess.TimeoutExpired:
-            return None, "timeout"
+            return None, "timeout", f"the function did not finish in {timeout} s"
         if p.returncode != 0:
-            return None, p.stderr.strip().splitlines()[-1][:300] if p.stderr.strip() else f"exit {p.returncode}"
+            lines = p.stderr.strip().splitlines() or [f"exit {p.returncode}"]
+            own = [i for i, line in enumerate(lines) if "cand.py" in line]
+            tail = "\n".join(lines[own[-1]:] if own else lines[-1:])
+            tail = re.sub(r'File "[^"]*cand\.py", line (\d+)', lambda m: f"line {int(m.group(1)) - HARNESS_LINES}", tail)
+            return None, lines[-1][:300], tail[-700:]
         try:
             out = json.loads(p.stdout.strip().splitlines()[-1])
-            return (out, "") if isinstance(out, dict) else (None, "answer is not a dict")
         except Exception:
-            return None, "no JSON output"
+            return None, "no JSON output", "solve() did not return a dict that json.dumps accepts"
+        return (out, "", "") if isinstance(out, dict) else (None, "answer is not a dict", "solve() must return a dict")
+
+
+def run_candidate(code: str, db: dict, params: dict, timeout: int = 30) -> tuple[dict | None, str]:
+    return _run(code, db, params, timeout)[:2]
+
+
+def crash_on_shown(task: Task, answer_text: str, db: dict) -> str:
+    """What running an answer on the slice its author was shown raises; '' if it runs.
+
+    This is all a repair turn is told. It is feedback an agent can get by running its own code
+    on the data it was given, and it says nothing about what the right answer is."""
+    return _run(extract_code(answer_text), db, task.params)[2]
 
 
 def score(fam: Family, task: Task, answer_text: str, dbs: list[dict]) -> dict:
@@ -329,9 +347,7 @@ def export_harbor(fam: Family, task: Task, dbs: list[dict], out_root: Path) -> P
 
         [solution.env]
         """))
-    (d / "instruction.md").write_text(
-        ticket(fam, task) + f"\n- Write it in `/app/{ENTRY}`; `/app/data` holds the tables as JSON. "
-        f"params for this job: `{json.dumps(task.params)}`.\n")
+    (d / "instruction.md").write_text(ticket(fam, task, harbor=True) + "\n")
     for t in fam.tables:
         (d / "environment/app/data" / f"{t}.json").write_text(json.dumps(dbs[0][t]))
     stub = '"""The job."""\n\n\ndef solve(db, params):\n    raise NotImplementedError\n'
